@@ -1059,7 +1059,7 @@ export function billingTypeFor(mimo, provider, model, planStatus = "unknown", ba
  * @param {object} deps - { ctx, cfg, getCounter }
  * @param {AbortSignal} [signal]
  */
-async function buildSummary(deps, signal) {
+async function buildSummary(deps, signal, options = {}) {
   const { ctx, cfg, getCounter } = deps;
   // 用户层设置（设置页保存）优先于 patch 层 config
   const mimo = deps.currentMimo?.() ?? cfg.mimo ?? DEFAULT_CONFIG.mimo;
@@ -1086,32 +1086,15 @@ async function buildSummary(deps, signal) {
     updatedAt: Date.now(),
   };
 
-  // 1) 官方三连
-  if (cookie) {
-    const [okB, rawB] = await fetchJson(`${apiBase}/balance`, cookie, signal);
-    const [okD, rawD] = await fetchJson(`${apiBase}/tokenPlan/detail`, cookie, signal);
-    const [okU, rawU] = await fetchJson(`${apiBase}/tokenPlan/usage`, cookie, signal);
-    const balance = okB ? parseBalance(rawB) : null;
-    const plan = okD ? parseTokenPlanDetail(rawD) : null;
-    const usage = okU ? parseTokenPlanUsage(rawU) : null;
-    // 套餐状态单独记：它决定 provider `mimo` 判套餐还是按量
-    result.planStatus = planStatusOf(okD, rawD, plan);
-
-    if (balance || usage) {
-      result.official = true;
-      result.balance = balance;
-      result.plan = plan;
-      result.planUsage = usage;
-    } else {
-      const errs = [];
-      if (!okB) errs.push(`balance: ${rawB}`);
-      if (!okD) errs.push(`detail: ${rawD}`);
-      if (!okU) errs.push(`usage: ${rawU}`);
-      result.officialError = errs.join("; ") || "empty responses";
-    }
-  } else {
-    result.officialError = "未配置 Cookie（config.mimo.cookie / 凭据 MIMO_CONSOLE_COOKIE）";
-  }
+  // 1) 官方三连 —— 走 deps.getOfficial：网络部分按 CACHE_TTL 单独缓存，
+  //    本地部分每次都重算（拆分理由见该函数注释）。refresh=1 时强制重取。
+  const official = await deps.getOfficial({ apiBase, cookie, signal, force: options.refreshOfficial === true });
+  result.planStatus = official.planStatus;
+  result.official = official.official;
+  result.officialError = official.officialError;
+  result.plan = official.plan;
+  result.planUsage = official.planUsage;
+  result.balance = official.balance;
 
   // 2) 本地统计（始终采集，供详情页统计与预测）
   //
@@ -1379,6 +1362,82 @@ export function apply(ctx, config) {
   };
   deps.readDefaultModel = readDefaultModel;
 
+  // ── 官方三连（网络）单独缓存 —— 这是"拆缓存"的实现 ──────────────────
+  //
+  // summary 里混了两类数据：
+  //   · 本地即时类：provider / 计费类型 / 单价 / token 计数 / UI 偏好
+  //     —— 随用户操作变化（切模型、刚发完消息），**不能缓存**，
+  //     否则弹窗里 token 数最长滞后 60s（或显示上一个渠道的计费类型）。
+  //   · 官方三连：balance / tokenPlan/detail / tokenPlan/usage
+  //     —— 占 **100% 的网络成本**（实测 3 个外部请求 ≈ 0.18s），
+  //     而额度以分钟计变化，60s 缓存完全合理；**故障时结果也进缓存**，
+  //     相当于对上游的隐式熔断，避免每分钟直冲一个正在故障的接口。
+  //
+  // ⚠ 不要退回"整体 60s 缓存"，也不建议直接关掉 TTL：
+  //   ① 三个 fetchJson 原先是串行 await，上游 hang 时最坏 3 × 15s = 45s，
+  //      无缓存意味着**每分钟**所有 /summary 都重吃一遍；
+  //   ② 多标签页无法共享，账号 Cookie 的请求频率被放大。
+  let officialCache = null;
+  let officialAt = 0;
+  let officialInflight = null;
+  deps.getOfficial = async ({ apiBase, cookie, signal, force } = {}) => {
+    if (!cookie) {
+      return {
+        official: false,
+        officialError: "未配置 Cookie（config.mimo.cookie / 凭据 MIMO_CONSOLE_COOKIE）",
+        planStatus: "unknown",
+        plan: null,
+        planUsage: null,
+        balance: null,
+      };
+    }
+    if (!force && officialCache && Date.now() - officialAt < CACHE_TTL_MS) return officialCache;
+    if (officialInflight) return officialInflight;
+    officialInflight = (async () => {
+      // 并行（原为 3 个串行 await）：最坏 45s → 15s，常态 180ms → 60ms
+      const [[okB, rawB], [okD, rawD], [okU, rawU]] = await Promise.all([
+        fetchJson(`${apiBase}/balance`, cookie, signal),
+        fetchJson(`${apiBase}/tokenPlan/detail`, cookie, signal),
+        fetchJson(`${apiBase}/tokenPlan/usage`, cookie, signal),
+      ]);
+      const balance = okB ? parseBalance(rawB) : null;
+      const plan = okD ? parseTokenPlanDetail(rawD) : null;
+      const usage = okU ? parseTokenPlanUsage(rawU) : null;
+      // 套餐状态单独记：它决定 provider `mimo` 判套餐还是按量
+      const value = {
+        planStatus: planStatusOf(okD, rawD, plan),
+        official: false,
+        officialError: "",
+        plan: null,
+        planUsage: null,
+        balance: null,
+      };
+      if (balance || usage) {
+        value.official = true;
+        value.balance = balance;
+        value.plan = plan;
+        value.planUsage = usage;
+      } else {
+        const errs = [];
+        if (!okB) errs.push(`balance: ${rawB}`);
+        if (!okD) errs.push(`detail: ${rawD}`);
+        if (!okU) errs.push(`usage: ${rawU}`);
+        value.officialError = errs.join("; ") || "empty responses";
+      }
+      officialCache = value;
+      officialAt = Date.now();
+      return value;
+    })().finally(() => {
+      officialInflight = null;
+    });
+    return officialInflight;
+  };
+  /** Cookie 等设置变化时作废官方数据（改了 Cookie 必须立刻重取）。 */
+  deps.clearOfficialCache = () => {
+    officialCache = null;
+    officialAt = 0;
+  };
+
   // 跟踪当前生效的 provider/model。
   // 优先级：**当前选中的默认模型**（与 UI 同源，切了就算）→ request/header 事件
   //        → 落盘计数器快照 → 内置统计快照 → 空值。
@@ -1408,8 +1467,7 @@ export function apply(ctx, config) {
       const scope = settingsCtx.settings.register(SETTINGS_NS, schema, { base: config ?? {} });
       userSettings = scope;
       scope.watch(() => {
-        cached = null;
-        cachedAt = 0;
+        deps.clearOfficialCache?.();   // Cookie 改了：官方数据必须重取
       });
     } catch (error) {
       ctx.logger?.warn?.("[dsh-mimo-usage] settings 注册失败：%s", error instanceof Error ? error.message : String(error));
@@ -1426,35 +1484,19 @@ export function apply(ctx, config) {
   deps.currentMimo = currentMimo;
 
   // 60 秒结果缓存；refresh=1 绕过
-  let cached = null;
-  let cachedAt = 0;
   let inflight = null;
+  /**
+   * summary **不再整体缓存** —— 本地部分（provider/计费/单价/token 计数/UI 偏好）
+   * 每次都重算，只有官方三连的成本在 deps.getOfficial 内按 60s 缓存（拆分见其注释）。
+   * inflight 仅用于并发去重：多个标签页同时请求时共享一次构建。
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<object>}
+   */
   const getSummary = (signal) => {
-    // ⚠「当前选中模型」一变，缓存**立即作废**：summary 的 provider / billingType /
-    // 单价都由它决定，而用户切模型是随手操作，可能落在 60s TTL 内。
-    // 不失效的后果（用户实测反馈）：切回 mimo 后**最长 60 秒**里，
-    // 所有客户端读到的都还是上一个渠道的计费类型 —— 胶囊"又变回按量付费"。
-    const selected = deps.readDefaultModel?.();
-    if (
-      cached &&
-      selected &&
-      (selected.provider || selected.model) &&
-      `${selected.provider ?? ""}/${selected.model ?? ""}` !== `${cached.provider ?? ""}/${cached.model ?? ""}`
-    ) {
-      cached = null;
-      cachedAt = 0;
-    }
-    if (cached && Date.now() - cachedAt < CACHE_TTL_MS) return Promise.resolve(cached);
     if (inflight) return inflight;
-    inflight = buildSummary(deps, signal)
-      .then((value) => {
-        cached = value;
-        cachedAt = Date.now();
-        return value;
-      })
-      .finally(() => {
-        inflight = null;
-      });
+    inflight = buildSummary(deps, signal).finally(() => {
+      inflight = null;
+    });
     return inflight;
   };
 
@@ -1547,8 +1589,7 @@ export function apply(ctx, config) {
                   }
                   if (typeof body.wrapToolbar === "boolean") patch.wrapToolbar = body.wrapToolbar;
                   await userSettings.update({ mimo: patch });
-                  cached = null;
-                  cachedAt = 0;
+                  deps.clearOfficialCache?.();   // 设置已保存：官方数据作废
                   writeJson(res, 200, { ok: true, data: { saved: Object.keys(patch) } });
                   return;
                 }
@@ -1562,7 +1603,7 @@ export function apply(ctx, config) {
               }
               if (url.pathname === ROUTE_PREFIX + "/summary") {
                 const force = url.searchParams.get("refresh") === "1";
-                const payload = force ? await buildSummary(deps) : await getSummary();
+                const payload = force ? await buildSummary(deps, undefined, { refreshOfficial: true }) : await getSummary();
                 // client/clientLog 实时合并：浏览器半边的回传不该跟着 summary 缓存过期
                 writeJson(res, 200, {
                   ok: true,

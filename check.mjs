@@ -701,15 +701,16 @@ if (loaded) {
       "切换后（默认模型=mimo）判定为 Token Plan 套餐");
   }
 
-  // summary 缓存必须在「当前选中模型」变化时立即作废 ——
-  // 用户反馈"切回 mimo 后胶囊又变回按量付费"：TTL 60s 内切模型，
-  // 所有客户端都会拿到上一个渠道的计费类型。
+  // 缓存策略回归（09-27 拆缓存）：本地部分**永远即时**、官方三连按 TTL 缓存、
+  // 三个外部请求**必须并行**（原为串行 3×15s=45s）。用户问过"能否关掉 TTL"，
+  // 实测全关的坏处（0.7ms→0.18s、失去故障退避、多标签页放大）→ 采用拆分方案。
   {
     const src = readFileSync(join(here, "host.js"), "utf8");
+
+    // (A) summary 级缓存已移除 → provider/计费/计数每次都重算
     const st = src.indexOf("const getSummary = (signal)");
-    ok(st > 0, "host 有 getSummary（summary 缓存入口）");
+    ok(st > 0, "host 有 getSummary 入口");
     if (st > 0) {
-      // 大括号配对取出整个 getSummary 函数体
       let depth = 0;
       let en = -1;
       for (let k = src.indexOf("{", st); k < src.length; k++) {
@@ -724,15 +725,37 @@ if (loaded) {
         }
       }
       const body = src.slice(st, en);
-      ok(/deps\.readDefaultModel\?\.\(\)/.test(body),
-        "getSummary 读「当前选中模型」（不读就会漏掉模型切换）");
-      ok(/cached = null;/.test(body) && /cachedAt = 0;/.test(body),
-        "选中模型变化时清空缓存（否则 60s 内给的仍是旧渠道）");
-      ok(/cached\.provider/.test(body) && /cached\.model/.test(body),
-        "比对 provider+model（同 provider 换模型时价格/覆盖也不同）");
-      ok(!/if \(cached && Date\.now\(\) - cachedAt < CACHE_TTL_MS\)/.test(body.split("readDefaultModel")[0]),
-        "TTL 判断位于模型比对**之后**（先比后用缓存）");
+      ok(!/CACHE_TTL_MS/.test(body), "getSummary 不做整体 TTL 缓存（本地部分每次重算）");
+      ok(/inflight/.test(body), "保留并发去重（多标签页共享一次构建）");
+      ok(!/cached = value/.test(body), "不把结果写回 summary 级缓存");
     }
+
+    // (B) 官方三连有自己的 TTL 缓存
+    ok(/deps\.getOfficial = async/.test(src), "官方三连单独缓存（deps.getOfficial）");
+    const off = src.indexOf("deps.getOfficial = async");
+    const offSeg = src.slice(off, off + 3000);
+    ok(/Date\.now\(\) - officialAt < CACHE_TTL_MS/.test(offSeg), "官方数据带 TTL 判断（60s）");
+    ok(/officialCache = value;/.test(offSeg) && /officialAt = Date\.now\(\);/.test(offSeg),
+      "官方结果写入缓存（含失败结果 → 对上游的隐式熔断）");
+    ok(/if \(officialInflight\) return officialInflight;/.test(offSeg), "官方请求并发去重");
+
+    // (C) 三个外部请求必须并行
+    ok(/Promise\.all\(\s*\[\s*fetchJson\(`\$\{apiBase\}\/balance`/.test(src),
+      "三个官方请求并行（Promise.all）—— 串行时最坏 3×15s=45s");
+    const fcCount = (src.slice(off, off + 3000).match(/fetchJson\(`\$\{apiBase\}/g) || []).length;
+    ok(fcCount === 3, `三个 fetchJson 都在并行块内（实为 ${fcCount}）`);
+
+    // (D) refresh=1 必须连官方数据一起重取（否则"刷新"形同虚设）
+    ok(/buildSummary\(deps, undefined, \{ refreshOfficial: true \}\)/.test(src),
+      "refresh=1 强制重取官方三连");
+    ok(/force: options\.refreshOfficial === true/.test(src),
+      "buildSummary 把 refresh 标记透传给 getOfficial");
+
+    // (E) Cookie 变化必须作废官方缓存（否则新 Cookie 要等 60s 才生效）
+    ok(/clearOfficialCache/.test(src) && /deps\.clearOfficialCache = \(\) =>/.test(src),
+      "有 clearOfficialCache 供设置变化时调用");
+    ok((src.match(/deps\.clearOfficialCache\?\.\(\);/g) || []).length >= 2,
+      "settings watch 与 settings POST 都作废官方缓存（≥2 处）");
   }
 
   // (e) 官方套餐状态的三态区分（none 是官方的否定结论，unknown 只是没结论）
