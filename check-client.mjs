@@ -186,7 +186,13 @@ for (const scene of SCENARIOS) {
   ok(/M12 0C8\.016 0 4\.756\.255 2\.493 2\.516/.test(src), "mi logo 用的是 simple-icons 官方路径");
 
   // 配色必须对齐 codebuddy 的 variant="mono"（用平台主题变量，主题自适应）
-  ok(/var\(--dsw-alias-brand-primary/.test(src), "logo 底色用 --dsw-alias-brand-primary（同 codebuddy）");
+  // 品牌 logo 必须用**固定的品牌色**，不能用主题变量：
+  // 本机主题把 --dsw-alias-brand-primary 定义为 #0f1115（近黑），
+  // logo 会变成看不清的黑块（实测 computed fill = rgb(15,17,21)）。
+  // codebuddy 同样如此：CodeBuddyLogo 在 variant="brand" 下写死 #6C4DFF。
+  ok(/const MI_LOGO_FILL = "#ff6900"/.test(src), "mi logo 用固定品牌橙 #ff6900");
+  ok(!/fill: "var\(--dsw-alias-brand-primary/.test(src), "logo 不依赖会变主题的 --dsw-alias-brand-primary（否则可能变成近黑）");
+  ok(/fill: MI_LOGO_FILL/.test(src), "logo path 引用 MI_LOGO_FILL 常量");
   ok(/var\(--dsw-alias-border-l3/.test(src), "环底圈用 --dsw-alias-border-l3（同 codebuddy orbitStroke）");
   ok(/var\(--dsw-alias-label-tertiary/.test(src), "环进度圈用 --dsw-alias-label-tertiary（同 codebuddy stroke）");
 

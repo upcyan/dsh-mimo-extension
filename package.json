@@ -34,7 +34,9 @@
     "host.js",
     "client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "screenshots.json",
+    "assets"
   ],
   "dsh": {
     "bundle": {

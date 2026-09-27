@@ -1083,6 +1083,17 @@
     /** 中心 logo 尺寸（对齐 codebuddy 的 `CodeBuddyLogo size={12}`）。 */
     const RING_LOGO_SIZE = 12;
 
+    /**
+     * mi logo 的填充色 = 小米品牌橙。
+     *
+     * ⚠ **不要**改回 `var(--dsw-alias-brand-primary)`：本机主题把该变量定义成
+     * `#0f1115`（近黑），环里的 logo 会变成一团看不清的黑块（实测计算值
+     * `rgb(15,17,21)`）。品牌 logo 应当固定用品牌色 —— codebuddy 也是这个策略，
+     * 它的 `CodeBuddyLogo` 在 `variant="brand"`（默认）下写死 `#6C4DFF`，
+     * 只有 `mono` 变体才用主题变量。
+     */
+    const MI_LOGO_FILL = "#ff6900";
+
     /** mi logo 尺寸。 */
     function MiLogo({ size = RING_LOGO_SIZE }) {
       return h(
@@ -1095,7 +1106,7 @@
           focusable: "false",
           style: { display: "block", flex: "none" },
         },
-        h("path", { d: MI_LOGO_PATH, fill: "var(--dsw-alias-brand-primary, #ff6900)" }),
+        h("path", { d: MI_LOGO_PATH, fill: MI_LOGO_FILL }),
       );
     }
 
