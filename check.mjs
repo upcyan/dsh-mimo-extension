@@ -701,6 +701,40 @@ if (loaded) {
       "切换后（默认模型=mimo）判定为 Token Plan 套餐");
   }
 
+  // summary 缓存必须在「当前选中模型」变化时立即作废 ——
+  // 用户反馈"切回 mimo 后胶囊又变回按量付费"：TTL 60s 内切模型，
+  // 所有客户端都会拿到上一个渠道的计费类型。
+  {
+    const src = readFileSync(join(here, "host.js"), "utf8");
+    const st = src.indexOf("const getSummary = (signal)");
+    ok(st > 0, "host 有 getSummary（summary 缓存入口）");
+    if (st > 0) {
+      // 大括号配对取出整个 getSummary 函数体
+      let depth = 0;
+      let en = -1;
+      for (let k = src.indexOf("{", st); k < src.length; k++) {
+        const c = src[k];
+        if (c === "{") depth++;
+        else if (c === "}") {
+          depth--;
+          if (depth === 0) {
+            en = k + 1;
+            break;
+          }
+        }
+      }
+      const body = src.slice(st, en);
+      ok(/deps\.readDefaultModel\?\.\(\)/.test(body),
+        "getSummary 读「当前选中模型」（不读就会漏掉模型切换）");
+      ok(/cached = null;/.test(body) && /cachedAt = 0;/.test(body),
+        "选中模型变化时清空缓存（否则 60s 内给的仍是旧渠道）");
+      ok(/cached\.provider/.test(body) && /cached\.model/.test(body),
+        "比对 provider+model（同 provider 换模型时价格/覆盖也不同）");
+      ok(!/if \(cached && Date\.now\(\) - cachedAt < CACHE_TTL_MS\)/.test(body.split("readDefaultModel")[0]),
+        "TTL 判断位于模型比对**之后**（先比后用缓存）");
+    }
+  }
+
   // (e) 官方套餐状态的三态区分（none 是官方的否定结论，unknown 只是没结论）
   const ps = host.planStatusOf;
   ok(ps(true, { code: 0, data: { planCode: "lite:year", expired: false } }, { expired: false }) === "active",

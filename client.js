@@ -546,6 +546,40 @@
       return Number(summary?.sessionTokens) || 0;
     }
 
+    /**
+     * 计费类型（浏览器半侧判定，弹窗与详情页共用）。
+     *
+     * ⚠ 为什么不能直接读 `summary.billingType`：host 的 summary 有 **60s 缓存**，
+     * 而弹窗的**可见性门读的是实时投影**（`modelSelection`）。于是切模型后的窗口期
+     * 会出现"环已经切过去了，计费行还停在上一个渠道" —— 用户实测反馈
+     * 「切回 mimo 后胶囊又变回按量付费」，就是 summary 里还留着 codebuddy 时代的 payg。
+     *
+     * ✅ provider 一致（或拿不到选中模型）→ 信 host；**不一致 → 按 host 同一套规则
+     *    本地重算**（name / planStatus 两条信号），保证这段窗口期显示正确的计费类型。
+     *    调用方同时会强制刷新拿权威值（见 pill 里 selectedProvider 变化的 effect）。
+     *
+     * 注意：本地拿不到 `billingTypeOverrides` 与"别的 provider 的 baseURL"，
+     * 所以这两条信号只由 host 判；但那两条只影响同一 provider 的结论，
+     * 而本函数只在 provider **不同**时才走本地分支。
+     *
+     * @param {object|null} summary - /summary 返回
+     * @param {string} [selectedProvider] - 当前选中的 provider（投影优先）
+     * @returns {"token-plan"|"payg"}
+     */
+    function billingTypeForSelection(summary, selectedProvider) {
+      const fromHost = summary?.billingType ?? "token-plan";
+      if (!selectedProvider || !summary?.provider || summary.provider === selectedProvider) {
+        return fromHost;
+      }
+      // 以下为 host billingTypeFor 的同规则降级（省略 overrides/baseURL 两条）
+      if (/token-plan/i.test(selectedProvider)) return "token-plan";
+      if (/mimo/i.test(selectedProvider)) {
+        const status = summary.planStatus;
+        return status === "expired" || status === "none" ? "payg" : "token-plan";
+      }
+      return "payg";
+    }
+
     /** 宿主 JSON 端点。 */
     /**
      * 调用插件宿主端点。
@@ -674,10 +708,15 @@
       const epochRef = useRef(0);
       const rootRef = useRef(null);
 
-      const refresh = useCallback(async () => {
+      /**
+       * 拉取 summary。
+       * @param {boolean} [force] - true 时带 refresh=1 绕过 host 的 60s 缓存
+       *   （选中模型刚变时必须传，否则拿到的是上一个渠道的计费类型）
+       */
+      const refresh = useCallback(async (force) => {
         const epoch = ++epochRef.current;
         try {
-          const data = await rpc("summary");
+          const data = await rpc("summary", force ? { refresh: "1" } : undefined);
           if (epoch !== epochRef.current) return;
           setSummary(data);
           setFailed(false);
@@ -767,6 +806,17 @@
       // 模型是否来自"当前选中"（而非最近一次请求）—— 供 UI 标注来源
       const modelFromSelection = Boolean(selected?.model);
 
+      // ⚠ 选中 provider 一变就**强制**刷新一次（绕过 host 60s 缓存）。
+      // 否则可见性门（实时投影）已把环切到 mimo，计费行却还在读 codebuddy 时代的
+      // 缓存 → 用户看到"切回 mimo 后胶囊又变回按量付费"。首帧跳过（mount 已拉过）。
+      // 本 effect 必须留在 `if (!providerIsMiMo) return null` 之前 —— hook 顺序规则。
+      const seenProviderRef = useRef(selectedProvider);
+      useEffect(() => {
+        if (seenProviderRef.current === selectedProvider) return; // 含首帧
+        seenProviderRef.current = selectedProvider;
+        if (selectedProvider) refresh(true);
+      }, [selectedProvider, refresh]);
+
       // ── 弹层定位：createPortal + 真实尺寸测量 + 双向钳制 ────────────────
       //
       // ⚠ 历史坑（用户两次反馈"弹窗在屏幕外/显示不全"）：
@@ -836,7 +886,8 @@
 
       if (!providerIsMiMo) return null;
 
-      const billingType = summary?.billingType ?? "token-plan";
+      // 用共享判定：与实时选中的 provider 对齐（详见 billingTypeForSelection）
+      const billingType = billingTypeForSelection(summary, selectedProvider);
       const unit = summary?.planUsage?.items?.[0] ?? null;
       const remainPercent = unit ? Math.max(0, 100 - unit.percent) : null;
       const isPlan = billingType === "token-plan";
@@ -1338,7 +1389,8 @@
         load(false);
       }, [load]);
 
-      const billingType = summary?.billingType ?? "token-plan";
+      // 与胶囊同源：选中的 provider 与缓存里的不一致时本地重算（见 helper 注释）
+      const billingType = billingTypeForSelection(summary, modelProvider);
       const planUsage = summary?.planUsage ?? null;
       const unit = planUsage?.items?.[0] ?? null;
       const local = summary?.local ?? null;

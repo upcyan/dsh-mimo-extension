@@ -1430,6 +1430,20 @@ export function apply(ctx, config) {
   let cachedAt = 0;
   let inflight = null;
   const getSummary = (signal) => {
+    // ⚠「当前选中模型」一变，缓存**立即作废**：summary 的 provider / billingType /
+    // 单价都由它决定，而用户切模型是随手操作，可能落在 60s TTL 内。
+    // 不失效的后果（用户实测反馈）：切回 mimo 后**最长 60 秒**里，
+    // 所有客户端读到的都还是上一个渠道的计费类型 —— 胶囊"又变回按量付费"。
+    const selected = deps.readDefaultModel?.();
+    if (
+      cached &&
+      selected &&
+      (selected.provider || selected.model) &&
+      `${selected.provider ?? ""}/${selected.model ?? ""}` !== `${cached.provider ?? ""}/${cached.model ?? ""}`
+    ) {
+      cached = null;
+      cachedAt = 0;
+    }
     if (cached && Date.now() - cachedAt < CACHE_TTL_MS) return Promise.resolve(cached);
     if (inflight) return inflight;
     inflight = buildSummary(deps, signal)

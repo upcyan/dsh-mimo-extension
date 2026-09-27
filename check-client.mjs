@@ -338,6 +338,61 @@ for (const scene of SCENARIOS) {
   ok(splitSessionByProvider(null) === null, "session=null → 返回 null");
 }
 
+// ---------- 计费类型必须与「当前选中 provider」对齐 ----------
+// 用户反馈"切回 mimo 后胶囊又变回按量付费"：可见性门读实时投影、计费行读
+// host 的 60s 缓存 summary → 切模型后的窗口期两者不同步。回归盯住这条。
+{
+  const src5 = readFileSync(new URL("./client.js", import.meta.url), "utf8");
+  const st = src5.indexOf("function billingTypeForSelection");
+  let depth = 0;
+  let en = -1;
+  for (let k = src5.indexOf("{", st); k < src5.length; k++) {
+    const c = src5[k];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        en = k + 1;
+        break;
+      }
+    }
+  }
+  const fn = new Function(`${src5.slice(st, en)}\nreturn billingTypeForSelection;`)();
+  const B = (provider, billingType, planStatus) => ({ provider, billingType, planStatus });
+  const sel = undefined;
+
+  // 陈旧缓存 = 上一个渠道（codebuddy）时代的结果；选中已切到 mimo
+  ok(fn(B("codebuddy", "payg", "active"), "mimo") === "token-plan",
+    "缓存是 codebuddy/payg + 选中 mimo(active) → 本地纠正为 token-plan");
+  ok(fn(B("codebuddy", "payg", "expired"), "mimo") === "payg",
+    "选中 mimo 但套餐已过期 → payg");
+  ok(fn(B("codebuddy", "payg", "none"), "mimo") === "payg",
+    "选中 mimo 但官方明确无订阅 → payg");
+  ok(fn(B("codebuddy", "payg", "unknown"), "mimo") === "token-plan",
+    "选中 mimo、套餐状态未知 → 保守判套餐（与 host 规则一致）");
+  // 反方向：缓存还是 mimo/套餐，用户已切到 codebuddy
+  ok(fn(B("mimo", "token-plan", "active"), "codebuddy") === "payg",
+    "缓存是 mimo/套餐 + 选中 codebuddy → payg");
+  ok(fn(B("codebuddy", "token-plan", "active"), "xiaomi-token-plan-cn") === "token-plan",
+    "选中 provider 名含 token-plan → 套餐");
+  ok(fn(B("mimo", "payg", "active"), sel) === "payg",
+    "拿不到选中模型 → 信 host（不猜）");
+  ok(fn(B("mimo", "payg", "active"), "mimo") === "payg",
+    "provider 一致 → 信 host 的结论");
+  ok(fn(null, "mimo") === "token-plan",
+    "summary 缺失 → 保守默认 token-plan");
+
+  // 必须真的走到 force 刷新，否则修复只完成一半
+  ok(/rpc\("summary", force \? \{ refresh: "1" \} : undefined\)/.test(src5),
+    "refresh(force) 会带 refresh=1 绕过 host 60s 缓存");
+  ok(/if \(selectedProvider\) refresh\(true\);/.test(src5),
+    "选中 provider 变化时强制刷新");
+  ok(/const billingType = billingTypeForSelection\(summary, selectedProvider\)/.test(src5),
+    "弹窗计费行走共享判定（非直读 summary）");
+  ok(/const billingType = billingTypeForSelection\(summary, modelProvider\)/.test(src5),
+    "详情页计费类型也走共享判定");
+}
+
 // ---------- i18n 一致性（这条曾抓到真 bug：view.notMimo 用了但没定义）----------
 {
   const src3 = readFileSync(new URL("./client.js", import.meta.url), "utf8");
