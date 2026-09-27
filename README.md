@@ -15,6 +15,10 @@ DeepSeek Harness 插件：**MiMo 额度胶囊**（位置可配置）+ **MiMo 用
 | 点击额度环 | 用量摘要卡 | 计费类型、剩余额度/会话 tokens、本月已用、套餐总量、请求次数、当前模型，底部有「查看详情」入口 |
 | 详情页 | MiMo 用量 tab | 当前模型、计费类型、**本会话 MiMo 用量（按渠道归属）**、今日/历史用量、收费估算、用量趋势与预测，**页面底部可配置 Cookie 等** |
 
+| 额度环 | 点击弹出用量摘要卡 | 移动端（390px） |
+| --- | --- | --- |
+| ![额度环](assets/screenshot-1-ring.png) | ![用量摘要卡](assets/screenshot-2-popover.png) | ![移动端](assets/screenshot-3-mobile.png) |
+
 ### 会话余额按渠道归属（重要）
 
 **一个会话可以换过模型**，所以 `session.totalTokens` 不等于「MiMo 用量」。实测某会话：
