@@ -10,11 +10,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 自检是纯 Node 脚本，不需要装 dsh —— 需要 dsh 的那一项会自动跳过
       # （见 check.mjs 里 skip 的说明），所以这里 NOT 安装任何依赖。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
