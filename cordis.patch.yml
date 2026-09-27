@@ -1,9 +1,9 @@
-# dsh-mimo-usage 组合包 patch 层：安装后自激活，无需手改 profile 配置。
+# dsh-mimo-extension 组合包 patch 层：安装后自激活，无需手改 profile 配置。
 #
 # ┌─ 配置方式（推荐）───────────────────────────────────────────────┐
 # │ 以下所有项都可以在 GUI 里改：                                        │
 # │   设置 → 插件（或「MiMo 用量」标签页）→ MiMo 额度配置                 │
-# │ 界面保存的值写入 settings.yaml 的 dsh-mimo-usage 命名空间，           │
+# │ 界面保存的值写入 settings.yaml 的 dsh-mimo-extension 命名空间，           │
 # │ 优先级高于本文件的 config（本文件只作为组成基线/默认值）。              │
 # └────────────────────────────────────────────────────────────────┘
 #
@@ -27,8 +27,8 @@
 #      （expired/none → 按量；active/unknown → 套餐）
 #   5) 其余 provider → 按量（pay-as-you-go）
 - insert:
-    - id: mimo-usage
-      name: dsh-mimo-usage
+    - id: mimo-extension
+      name: dsh-mimo-extension
       config:
         mimo:
           # 官方控制台 Cookie（留空则只用本地估算）

@@ -1,10 +1,11 @@
 {
-  "name": "dsh-mimo-usage",
-  "version": "0.2.1",
+  "name": "dsh-mimo-extension",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "mi logo + quota ring beside the model selector, plus a MiMo usage detail tab (billing type, plan quota, per-session attribution, cost estimate).",
   "keywords": [
+    "dsh-mimo-extension",
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
@@ -17,11 +18,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/upcyan/dsh-mimo-usage.git"
+    "url": "git+https://github.com/upcyan/dsh-mimo-extension.git"
   },
-  "homepage": "https://github.com/upcyan/dsh-mimo-usage#readme",
+  "homepage": "https://github.com/upcyan/dsh-mimo-extension#readme",
   "bugs": {
-    "url": "https://github.com/upcyan/dsh-mimo-usage/issues"
+    "url": "https://github.com/upcyan/dsh-mimo-extension/issues"
   },
   "main": "host.js",
   "exports": {

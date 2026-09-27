@@ -1,4 +1,4 @@
-# dsh-mimo-usage
+# dsh-mimo-extension
 
 DeepSeek Harness 插件：**MiMo 额度胶囊**（位置可配置）+ **MiMo 用量详情页**（当前模型计费类型、使用量、收费、用量统计、用量预测、**内置 Cookie 配置**）。
 
@@ -6,6 +6,18 @@ DeepSeek Harness 插件：**MiMo 额度胶囊**（位置可配置）+ **MiMo 用
 > 来自 fnOS NAS 部署环境，替换成你自己的即可。Cookie 相关内容只出现**字段名**
 > （`api-platform_serviceToken` / `userId`），不含任何真实凭据；插件也**从不把
 > Cookie 回传给浏览器**，只存在本机 `settings.yaml`。
+
+## 改名说明（0.3.0）
+
+插件原名 **`dsh-mimo-usage`**，2026-09-27 改名为 **`dsh-mimo-extension`**
+（仓库与 npm 包名同步改为 `dsh-mimo-extension`）。
+
+**你不需要手工搬配置**：启动时会自动把旧命名空间 `dsh-mimo-usage` 里的
+用户配置（**含 Cookie**、套餐总量、胶囊位置、各开关）迁移到新的
+`dsh-mimo-extension` 段。迁移是**单向、幂等**的（新段已有配置就不覆盖），
+且**不删除旧段** —— 留作回滚依据，你可以确认无误后自行清理。
+
+> 迁移只搬 `mimo` 子对象。如果你在旧段里手工加过其它字段，请自行处理。
 
 ## 功能
 
@@ -128,7 +140,7 @@ codebuddy/deepseek-v4.1-flash 89,081,411 tokens / 414 calls
 | 额度胶囊位置 | 见上表 |
 | 允许输入框工具栏自动换行 | 见上节 |
 
-**保存的值写入 `$DSH_HOME/settings.yaml` 的 `dsh-mimo-usage` 命名空间**，优先级高于 `cordis.patch.yml` 里的 `config`（config 仅作组成基线）。
+**保存的值写入 `$DSH_HOME/settings.yaml` 的 `dsh-mimo-extension` 命名空间**，优先级高于 `cordis.patch.yml` 里的 `config`（config 仅作组成基线）。
 
 > 🔒 **安全**：Cookie 只存在本机 `settings.yaml`，**不回传给浏览器** ——
 > 读取接口只返回「是否已配置 + 来源」，输入框也永不回显明文。
@@ -176,7 +188,7 @@ Cookie 是几百字符的长串，输入框**支持**：
 
 ## 接口路径与 fnOS 网关前缀（重要）
 
-插件宿主路由是 **`/dsh-mimo-usage/*`**，刻意**不用** `/api/*`。
+插件宿主路由是 **`/dsh-mimo-extension/*`**，刻意**不用** `/api/*`。
 
 ### 为什么不用 `/api`
 
@@ -201,7 +213,7 @@ fnOS 网关（`/vol1/@appcenter/dsh-fnos/gateway.js`）把整个页面挂在
 3. 在 `<head>` 注入 `<script>globalThis.__FNOS_GATEWAY_PREFIX__="/app/dsh-fnos/dsh"</script>`
 
 **关键坑：`<base href>` 对以 `/` 开头的绝对路径无效。** 所以插件直接
-`fetch("/dsh-mimo-usage/summary")` 会打到 `https://<NAS>:3080/dsh-mimo-usage/summary`
+`fetch("/dsh-mimo-extension/summary")` 会打到 `https://<NAS>:3080/dsh-mimo-extension/summary`
 —— 没有前缀，网关走无前缀分支原样转发，落到 core 的未注册路径上：
 
 - **POST** → `@deepseek-ai/dsh-host-frontend-static` 的 fallback seat
@@ -232,8 +244,8 @@ function gatewayPath(path) {
 
 | 环境 | `__FNOS_GATEWAY_PREFIX__` | 实际请求路径 |
 | --- | --- | --- |
-| 直连 `http://127.0.0.1:3081` | `undefined` | `/dsh-mimo-usage/summary` |
-| 经网关 `https://<NAS>:3080` | `/app/dsh-fnos/dsh` | `/app/dsh-fnos/dsh/dsh-mimo-usage/summary` |
+| 直连 `http://127.0.0.1:3081` | `undefined` | `/dsh-mimo-extension/summary` |
+| 经网关 `https://<NAS>:3080` | `/app/dsh-fnos/dsh` | `/app/dsh-fnos/dsh/dsh-mimo-extension/summary` |
 
 写插件的通用建议：**任何插件自己的 HTTP 路由都要套一层 `gatewayPath()`**，
 否则只在直连时能用、经网关必挂。诊断通道尤其要注意 ——
@@ -243,10 +255,10 @@ function gatewayPath(path) {
 
 | 端点 | 方法 | 用途 |
 | --- | --- | --- |
-| `/dsh-mimo-usage/summary` | GET | 额度与用量汇总（`?refresh=1` 绕过缓存） |
-| `/dsh-mimo-usage/session` | GET | 指定会话的 token 用量（`?id=<sessionId>`） |
-| `/dsh-mimo-usage/settings` | GET / POST | 读取 / 保存配置（Cookie 等） |
-| `/dsh-mimo-usage/ping` | POST | 浏览器半自诊断回传（随 `/summary` 的 `client` 字段吐出） |
+| `/dsh-mimo-extension/summary` | GET | 额度与用量汇总（`?refresh=1` 绕过缓存） |
+| `/dsh-mimo-extension/session` | GET | 指定会话的 token 用量（`?id=<sessionId>`） |
+| `/dsh-mimo-extension/settings` | GET / POST | 读取 / 保存配置（Cookie 等） |
+| `/dsh-mimo-extension/ping` | POST | 浏览器半自诊断回传（随 `/summary` 的 `client` 字段吐出） |
 
 ## 单位说明：Token Plan 用 Credits
 
@@ -373,10 +385,10 @@ export HOME=/vol1/@appshare/fn-deepseek-harness   # 与 fnOS 应用一致，共�
 cd /vol1/1000/deepseek_harness/fnos
 
 # 从本地目录安装
-dsh plugin --profile web add ./dsh-mimo-usage --config.minimumReleaseAge=0
+dsh plugin --profile web add ./dsh-mimo-extension --config.minimumReleaseAge=0
 
 # 或从 tgz（跨机器分发推荐）
-dsh plugin --profile web add ./dsh-mimo-usage-0.2.1.tgz --config.minimumReleaseAge=0
+dsh plugin --profile web add ./dsh-mimo-extension-0.2.1.tgz --config.minimumReleaseAge=0
 ```
 
 安装后**重启 `dsh web`**，再刷新浏览器（F5）使新 boot graph 生效。
@@ -385,21 +397,21 @@ dsh plugin --profile web add ./dsh-mimo-usage-0.2.1.tgz --config.minimumReleaseA
 
 ```sh
 P="$DSH_HOME/profiles/web"
-grep '"dsh-mimo-usage"' "$P/package.json"
-ls -la "$P/node_modules/dsh-mimo-usage"
-dsh --profile web --dump-config | grep -A3 "mimo-usage"   # 应打印 id: mimo-usage
+grep '"dsh-mimo-extension"' "$P/package.json"
+ls -la "$P/node_modules/dsh-mimo-extension"
+dsh --profile web --dump-config | grep -A3 "mimo-extension"   # 应打印 id: mimo-extension
 ```
 
 > profile 目录对受限用户只读时需用有写权限的账号执行。
 
 ## 配置
 
-编辑 `$DSH_HOME/profiles/web/cordis.patch.yml`，在 `mimo-usage` 条目下：
+编辑 `$DSH_HOME/profiles/web/cordis.patch.yml`，在 `mimo-extension` 条目下：
 
 ```yaml
 - insert:
-    - id: mimo-usage
-      name: dsh-mimo-usage
+    - id: mimo-extension
+      name: dsh-mimo-extension
       config:
         mimo:
           cookie: "api-platform_serviceToken=xxx; userId=yyy; ..."   # 官方接口 Cookie
@@ -472,10 +484,10 @@ dsh --profile web --dump-config | grep -A3 "mimo-usage"   # 应打印 id: mimo-u
 
 ## 结构
 
-- `host.js` — 宿主插件：注册 `/api/dsh-mimo-usage/*` 路由（balance / tokenPlan / usage / summary），Cookie 调官方接口，失败回退本地 usage 日志聚合；顺带注册 `/mimo` 斜杠命令与 `mimo_usage` 工具供模型查询。
+- `host.js` — 宿主插件：注册 `/api/dsh-mimo-extension/*` 路由（balance / tokenPlan / usage / summary），Cookie 调官方接口，失败回退本地 usage 日志聚合；顺带注册 `/mimo` 斜杠命令与 `mimo_usage` 工具供模型查询。
 - `client.js` — 浏览器 bundle（`__ModuleLoader__` 工厂格式，仅依赖平台共享 react，无构建步骤）：
   - `conversation.session.header.actions` 槽位（order 30，位于 jobs/trajectory 标签之后）→ **mimo额度** 胶囊
-  - `conversation.view` 槽位（id `mimo-usage`，label "MiMo 用量"）→ 详情页 tab
+  - `conversation.view` 槽位（id `mimo-extension`，label "MiMo 用量"）→ 详情页 tab
 - `package.json` — 声明 `dsh.bundle`（空 patch）+ `dsh.client`（web 平台）
 - `cordis.patch.yml` — 自激活层（含默认配置与 Cookie 配置说明）
 
@@ -491,13 +503,13 @@ dsh --profile web --dump-config | grep -A3 "mimo-usage"   # 应打印 id: mimo-u
 
 ```sh
 # 1. 把包放进 profile node_modules
-cp -r dsh-mimo-usage "$DSH_HOME/profiles/web/node_modules/dsh-mimo-usage"
+cp -r dsh-mimo-extension "$DSH_HOME/profiles/web/node_modules/dsh-mimo-extension"
 
 # 2. 在 profile package.json 的 dependencies 加一行
-#    "dsh-mimo-usage": "file:./node_modules/dsh-mimo-usage"
+#    "dsh-mimo-extension": "file:./node_modules/dsh-mimo-extension"
 
 # 3. 追加 bundles
-#    "dsh.profile.bundles" 末尾加 "dsh-mimo-usage"
+#    "dsh.profile.bundles" 末尾加 "dsh-mimo-extension"
 
 # 4. 追加 patch（或依赖 cordis.patch.yml 自带 insert——见下方说明）
 #    若插件的 cordis.patch.yml 被自动叠加，则无需手动改 profile cordis.patch.yml
@@ -514,10 +526,10 @@ cp -r dsh-mimo-usage "$DSH_HOME/profiles/web/node_modules/dsh-mimo-usage"
 ## 装了没生效？自诊断
 
 浏览器里"看不到胶囊 / 没有详情页"这种问题，服务端是看不到的。所以浏览器半边每走一个节点
-就向宿主 `POST /dsh-mimo-usage/ping` 报一次到，`GET /summary` 的 `client` 字段直接读结果：
+就向宿主 `POST /dsh-mimo-extension/ping` 报一次到，`GET /summary` 的 `client` 字段直接读结果：
 
 ```sh
-curl -s "http://127.0.0.1:3081/dsh-mimo-usage/summary" \
+curl -s "http://127.0.0.1:3081/dsh-mimo-extension/summary" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['client'])"
 ```
 
@@ -526,7 +538,7 @@ curl -s "http://127.0.0.1:3081/dsh-mimo-usage/summary" \
 | `null` | 浏览器压根没跑到新代码：硬刷新（Ctrl+Shift+R）；若 host.js 是刚改的，先重启 `dsh web`（`/ping` 是 host 侧路由） |
 | `module-loaded` | 脚本已执行但工厂没被调 → fiber 没激活，去「设置 → 插件」看该行状态（`failed` / `pending (waiting for services: …)`） |
 | `factory` | 工厂调了但 `apply` 没跑 → fiber 还在 pending 或 apply 抛错，看浏览器控制台 |
-| `apply-entered` | apply 开跑但没到 `applied` → 中途抛错，控制台搜 `[dsh-mimo-usage]` |
+| `apply-entered` | apply 开跑但没到 `applied` → 中途抛错，控制台搜 `[dsh-mimo-extension]` |
 | `applied` | 前端注册完成（`registered` 列出注册的槽位、`pillPosition` 为当前胶囊位置），仍看不到就是渲染层/槽位层问题 |
 | `skipped` / `skipped-duplicate` | 被包名守卫或重复装载兜底主动收手（`entryName` 会一并回传） |
 
@@ -534,7 +546,7 @@ curl -s "http://127.0.0.1:3081/dsh-mimo-usage/summary" \
 `clientLog` 里（每条带 `path`、`hash`、`at`）：
 
 ```sh
-curl -s "http://127.0.0.1:3081/dsh-mimo-usage/summary" \
+curl -s "http://127.0.0.1:3081/dsh-mimo-extension/summary" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['clientLog'])"
 ```
 
@@ -548,7 +560,7 @@ node check-client.mjs   # 用 mock ctx 离线跑 client 的 apply（110 项）
 ```
 
 > 历史 bug：`apply()` 里曾有一条**严格相等**的包名守卫
-> （`entryName !== "dsh-mimo-usage" → return`）。宿主一旦用别名装载，
+> （`entryName !== "dsh-mimo-extension" → return`）。宿主一旦用别名装载，
 > 整颗插件会**静默消失** —— 胶囊 + 详情页一起没了，且一行日志都没有。
 > 现在只在名字明确属于别的插件时才跳过（并打 `console.warn` + `probe("skipped")`），
 > 重复装载则靠 `slots.entriesOfSlot` 兜底。
@@ -561,18 +573,18 @@ node check-client.mjs   # 用 mock ctx 离线跑 client 的 apply（110 项）
 - 改完先跑三个验证脚本（都不需要重启、不碰运行中的服务）：
 
   ```sh
-  cd /vol1/1000/deepseek_harness/fnos/dsh-mimo-usage
+  cd /vol1/1000/deepseek_harness/fnos/dsh-mimo-extension
   node check.mjs          # 127 项静态 + 单元回归（含七项 bug 回归 + 网关前缀 + 当前模型优先级）
   node check-client.mjs   # 110 项：离线跑 apply + 环/logo/可见性/Cookie 粘贴/归属/i18n/弹层几何
   DSH_HOME=/vol1/@appdata/dsh-fnos/dsh-home \
-    MIMO_COOKIE="$(python3 -c "import yaml;print(yaml.safe_load(open('$DSH_HOME/settings.yaml'))['dsh-mimo-usage']['mimo']['cookie'])")" \
+    MIMO_COOKIE="$(python3 -c "import yaml;print(yaml.safe_load(open('$DSH_HOME/settings.yaml'))['dsh-mimo-extension']['mimo']['cookie'])")" \
     node verify-fix.mjs   # 端到端：起假 Cordis 上下文 → 打真实官方接口 → 校验 /summary /session /mimo /ping
   ```
 
 - 部署同步（profile 里的安装副本是解包后的目录，不是软链）：
 
   ```sh
-  P="$DSH_HOME/profiles/web/node_modules/dsh-mimo-usage"
+  P="$DSH_HOME/profiles/web/node_modules/dsh-mimo-extension"
   cp -f host.js "$P/host.js"        # 沙箱为 workspace-write 时需要更高权限
   ```
 

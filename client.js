@@ -14,13 +14,13 @@
 // pingDelay / pingBody / bootDigest / moduleDigest / stageHistory / pingSeq /
 // lastPayload / ROUTE_PREFIX。**加新代码时不要把它们挪到 IIFE 外面。**
 (function () {
-    // dsh-mimo-usage 浏览器半：会话头部「mimo额度」胶囊 + 「MiMo 用量」详情页。
+    // dsh-mimo-extension 浏览器半：会话头部「mimo额度」胶囊 + 「MiMo 用量」详情页。
     // 工厂格式直接注册进平台模块表，仅依赖平台共享的 react（无构建步骤）。
     //
     // 挂载点：
     //   conversation.session.header.actions —— order 30，排在 trajectory(10)/jobs(20)/额度(20) 之后，
     //     即紧跟"对话 / 轨迹"标签行右侧的动作区末尾。
-    //   conversation.view —— id "mimo-usage"，label "MiMo 用量"，order 15，
+    //   conversation.view —— id "mimo-extension"，label "MiMo 用量"，order 15，
     //     位于 trajectory(10) 之后、额度 dashboard balance(20) 之前。
     //
     // 显示规则：
@@ -28,10 +28,10 @@
     //   按量计费（payg）→ 标题 mimo额度 + 当前会话用量（如 "会话 1.2M"）
     //
     // 自诊断：浏览器里"装了没生效"服务端是看不到的，所以每个关键节点都向宿主
-    // POST 一次 /dsh-mimo-usage/ping，从 /summary 的 `client.stage` 就能读出卡在哪：
+    // POST 一次 /dsh-mimo-extension/ping，从 /summary 的 `client.stage` 就能读出卡在哪：
     //   module-loaded（脚本已执行）→ factory（模块表已调工厂）→
     //   apply-entered（apply 开跑）→ applied（槽位注册完成）/ skipped（被守卫拦下）
-    const ROUTE_PREFIX = "/dsh-mimo-usage";
+    const ROUTE_PREFIX = "/dsh-mimo-extension";
   /**
      * fnOS 网关会把页面挂在 `/app/dsh-fnos/dsh/` 下，并注入
      * `globalThis.__FNOS_GATEWAY_PREFIX__`；官方客户端模块全部靠它拼请求路径
@@ -52,7 +52,7 @@
     } catch {
       /* 忽略 */
     }
-    // 去尾部斜杠，避免拼出 `//dsh-mimo-usage`
+    // 去尾部斜杠，避免拼出 `//dsh-mimo-extension`
     prefix = prefix.replace(/\/+$/, "");
     return prefix + path;
   }
@@ -116,7 +116,7 @@
   //   loadCache 有我们 → 工厂已被物化（materialize 跑过）
   //   graphRows 有我们 → 启动清单认这条 entry
   function moduleDigest() {
-    const id = "dsh-mimo-usage";
+    const id = "dsh-mimo-extension";
     try {
       const ml = window.__ModuleLoader__;
       if (!ml) return "ml=none";
@@ -141,9 +141,9 @@
     try {
       const boot = window.__DSH_BOOT__;
       const es = (boot && Array.isArray(boot.entries) && boot.entries) || [];
-      const mine = es.find((e) => e && e.id === "dsh-mimo-usage");
+      const mine = es.find((e) => e && e.id === "dsh-mimo-extension");
       const inBatch = ((boot && Array.isArray(boot.batches) && boot.batches) || []).some(
-        (b) => Array.isArray(b.entries) && b.entries.includes("dsh-mimo-usage"),
+        (b) => Array.isArray(b.entries) && b.entries.includes("dsh-mimo-extension"),
       );
       let dom = "gone";
       try {
@@ -213,7 +213,7 @@
       /* 老版本平台没有 react-dom 时退化为非 portal 渲染 */
     }
 
-    const NS = "dsh.mimoUsage";
+    const NS = "dsh.mimoExtension";
     const zh = {
       "pill.label": "mimo额度",
       "pill.loading": "…",
@@ -661,7 +661,7 @@
       const direct = props?.selectView ?? props?.openView;
       if (typeof direct === "function") {
         try {
-          direct("mimo-usage", "");
+          direct("mimo-extension", "");
           return true;
         } catch {
           /* 落到 DOM 回退 */
@@ -2175,7 +2175,7 @@
     /**
      * 「MiMo 用量」页内的配置表单。
      *
-     * 保存后写入 `settings.yaml` 的 `dsh-mimo-usage` 命名空间（宿主经 ctx.settings 持久化），
+     * 保存后写入 `settings.yaml` 的 `dsh-mimo-extension` 命名空间（宿主经 ctx.settings 持久化），
      * 优先级高于 patch 层 config，保存即热生效（宿主清缓存 → 胶囊下次刷新用新值）。
      *
      * Cookie 不回传明文：读取接口只返回「是否已配置 + 来源」，输入框留空表示保持不变。
@@ -2629,7 +2629,7 @@
     function bindLocale(ctx) {
       try {
         if (typeof ctx.locale.register !== "function") return;
-        ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-mimo-usage: dictionaries");
+        ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-mimo-extension: dictionaries");
         if (typeof ctx.locale.bind === "function") boundT = ctx.locale.bind(NS);
       } catch {
         boundT = null;
@@ -2657,7 +2657,7 @@
      * 这里注入一段样式：允许该行 wrap，并让子项保持间距。
      * 仅在用户开启 `wrapToolbar` 时生效；用唯一 id 保证幂等，插件卸载时移除。
      */
-    const WRAP_STYLE_ID = "dsh-mimo-usage-toolbar-wrap";
+    const WRAP_STYLE_ID = "dsh-mimo-extension-toolbar-wrap";
     function applyToolbarWrap(enabled) {
       if (typeof document === "undefined") return () => {};
       const existing = document.getElementById(WRAP_STYLE_ID);
@@ -2668,9 +2668,9 @@
       if (existing) return () => {};
       const style = document.createElement("style");
       style.id = WRAP_STYLE_ID;
-      style.dataset.plugin = "dsh-mimo-usage";
+      style.dataset.plugin = "dsh-mimo-extension";
       style.textContent = `
-  /* dsh-mimo-usage：输入框工具行允许换行，避免插件工具图标互相挤占重叠。
+  /* dsh-mimo-extension：输入框工具行允许换行，避免插件工具图标互相挤占重叠。
      仅作用于会话输入区，不影响其它布局。 */
   [data-slot="conversation.composer.bar"] [class*="_tools"],
   [data-slot="conversation.composer.bar"] [class*="_actions"],
@@ -2689,13 +2689,13 @@
       // 兼容旧包名/别名行残留，避免重复注册
       const entryName = ctx.fiber?.entry?.options?.name;
       // 兼容旧包名/别名行残留，避免重复注册：只有 entry 名明确**不是**本插件时才跳过。
-      // ⚠️ 这里绝不能用严格相等判断 —— 宿主若用别名装载（"dsh-mimo-usage/client"、
+      // ⚠️ 这里绝不能用严格相等判断 —— 宿主若用别名装载（"dsh-mimo-extension/client"、
       //    带路径后缀等），早退会让整颗插件静默消失：胶囊 + 详情页一起没了，
       //    而且一行日志都没有，表现为"装了没生效"。宁可多注册一次再靠下面的
       //    槽位去重兜底，也不要无声地整片关掉。
-      if (typeof entryName === "string" && entryName.length > 0 && !/mimo-usage/i.test(entryName)) {
+      if (typeof entryName === "string" && entryName.length > 0 && !/mimo-extension/i.test(entryName)) {
         probe("skipped", { entryName });
-        console.warn(`[dsh-mimo-usage] 跳过装载：entry 名 "${entryName}" 不是本插件`);
+        console.warn(`[dsh-mimo-extension] 跳过装载：entry 名 "${entryName}" 不是本插件`);
         return;
       }
       probe("apply-entered", { entryName: String(entryName ?? "") });
@@ -2704,9 +2704,9 @@
       // 槽位里已有本插件的 tab 就说明上一个 fiber 还活着，直接收手。
       try {
         const existing = ctx.slots.entriesOfSlot?.("conversation.view");
-        if (Array.isArray(existing) && existing.some((entry) => entry?.options?.id === "mimo-usage")) {
+        if (Array.isArray(existing) && existing.some((entry) => entry?.options?.id === "mimo-extension")) {
           probe("skipped-duplicate", { entryName: String(entryName ?? "") });
-          console.info("[dsh-mimo-usage] 已在槽位中注册过，跳过重复装载");
+          console.info("[dsh-mimo-extension] 已在槽位中注册过，跳过重复装载");
           return;
         }
       } catch {
@@ -2749,7 +2749,7 @@
           disposeView = ctx.slots.register(
             {
               name: "conversation.view",
-              id: "mimo-usage",
+              id: "mimo-extension",
               order: 15,
               locale: NS,
               label: () => t("view.label"),
@@ -2793,7 +2793,7 @@
           const dispose = ctx.slots.register(
             {
               name: slot,
-              id: "mimo-usage-pill",
+              id: "mimo-extension-pill",
               order,
               locale: NS,
               label: () => t("pill.label"),
@@ -2867,7 +2867,7 @@
         ctx.slots.register(
           {
             name: "conversation.composer.dock",
-            id: "mimo-usage-probe",
+            id: "mimo-extension-probe",
             order: 999,
             locale: NS,
             label: () => "",
@@ -2934,7 +2934,7 @@
           }
           disposers.clear();
         },
-        "dsh-mimo-usage: pill seats",
+        "dsh-mimo-extension: pill seats",
       );
 
       // 自诊断：注册完成，把结果报给宿主（/summary 的 client 字段可读）
@@ -2944,7 +2944,7 @@
         pillPosition: String(currentSeat ?? ""),
       });
       console.info(
-        `[dsh-mimo-usage] client 已装载：tab=MiMo 用量，pill=${currentSeat ?? "hidden"}`,
+        `[dsh-mimo-extension] client 已装载：tab=MiMo 用量，pill=${currentSeat ?? "hidden"}`,
       );
     }
 
@@ -2956,6 +2956,6 @@
     return exports;
   }
 
-    window.__ModuleLoader__.load({ id: "dsh-mimo-usage", factory: makeFactory });
+    window.__ModuleLoader__.load({ id: "dsh-mimo-extension", factory: makeFactory });
     probe("module-loaded");
 })();

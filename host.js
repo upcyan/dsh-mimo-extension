@@ -1,11 +1,11 @@
 // @ts-check
 /**
- * dsh-mimo-usage — DeepSeek Harness 宿主插件
+ * dsh-mimo-extension — DeepSeek Harness 宿主插件
  *
  * 功能：
  *   /mimo          查看 MiMo 额度（套餐剩余 / 本地估算）
  *   工具 mimo_usage —— 让模型自己查询额度与用量
- *   /api/dsh-mimo-usage/*  供浏览器胶囊与详情页轮询的 JSON 路由
+ *   /api/dsh-mimo-extension/*  供浏览器胶囊与详情页轮询的 JSON 路由
  *
  * 数据来源（按优先级）：
  *   1. 小米官方控制台接口（需 Cookie：platform.xiaomimimo.com/api/v1/{balance,tokenPlan/detail,tokenPlan/usage}）
@@ -25,7 +25,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 
-export const name = "mimo-usage";
+export const name = "mimo-extension";
 
 /**
  * 强依赖：命令与工具注册表。
@@ -38,7 +38,18 @@ const REQUEST_TIMEOUT_MS = 15000;
 const CACHE_TTL_MS = 60_000;
 
 /** settings.yaml 里的配置命名空间。 */
-const SETTINGS_NS = "dsh-mimo-usage";
+const SETTINGS_NS = "dsh-mimo-extension";
+/**
+ * 重命名前的设置命名空间。
+ *
+ * 插件原名 `dsh-mimo-extension`（2026-09-27 改名为 `dsh-mimo-extension`）。
+ * 老用户的配置（**含 Cookie**）存在旧段落里，所以启动时要把它**迁移**到新段落 ——
+ * 直接换名会让用户凭空丢配置，而且旧段落会变成没人管的孤儿。
+ *
+ * ⚠ 迁移是**单向、幂等**的：只在"新段为空 + 旧段有内容"时搬一次，
+ * 之后旧段不再读取（但**不删除** —— 留作回滚依据，用户可手动清理）。
+ */
+const LEGACY_SETTINGS_NS = "dsh-mimo-usage";
 
 /**
  * 宿主路由前缀。刻意【不用】`/api/*`。
@@ -60,7 +71,7 @@ const SETTINGS_NS = "dsh-mimo-usage";
  * 否则浏览器 bridge 不会给请求补 `/app/` 前缀，nginx 会把它当静态文件去
  * `/usr/trim/www/` 找而返回 404。登记方式见 README「接口路径」一节。
  */
-const ROUTE_PREFIX = "/dsh-mimo-usage";
+const ROUTE_PREFIX = "/dsh-mimo-extension";
 
 /**
  * 设置值的规范化 + 类型兜底（**不再是 schema 本体**）。
@@ -185,6 +196,53 @@ function loadSchemaFactory(ctx) {
  * @param {any} ctx 插件上下文
  * @returns {any} 可注册的 schema；不可用时 undefined
  */
+/**
+ * 拿不到 schemastery 时的**兜底 schema**，只为让 `settings.register` 成功。
+ *
+ * **为什么必须有它**：`settings.update(ns, patch)` 要求命名空间**已注册**，
+ * 否则直接抛 `namespace "..." is not registered`。所以一旦注册失败，
+ * 本插件就**彻底写不进配置** —— 包括改名迁移（用户的 Cookie 搬不过来）。
+ * 原先的做法是"注册不了就整块跳过"，结果是：拿不到 schemastery 的环境里
+ * 配置只读 + 迁移静默失效（测试抓到的就是这个）。
+ *
+ * 契约（`dsh-settings` 只用这两点）：
+ *   · `schema(value)` → 解析后的值（用于 `resolve()`）
+ *   · `schema.toJSON()` → 描述符（用于 `describe()`；**缺它会拖垮整个设置页**，
+ *     见项目踩坑 1 —— 所以这里必须提供，且形状要合法）
+ *
+ * ⚠ 用**手工规范化**（`mimoSettingsSchema`）当解析函数：它自带默认值与类型收敛，
+ * 且**不抛错**（脏输入也洗平），正好适合兜底。
+ * ⚠ `toJSON()` 返回的是**最小可用描述符**（object + properties），
+ * 不声明 `role:"secret"` —— 因为兜底路径下我们拿不到 schemastery 的元数据 API。
+ * 这意味着**设置页里 Cookie 不会被标成密文**：这是兜底路径的取舍，
+ * 正常情况下（有 schemastery）走真 schema，Cookie 仍是 secret。
+ *
+ * @returns {Function & { toJSON: () => object, type: string }}
+ */
+export function buildFallbackSettingsSchema() {
+  const resolve = (input) => mimoSettingsSchema(input);
+  resolve.type = "object";
+  resolve.toJSON = () => ({
+    type: "object",
+    properties: {
+      mimo: {
+        type: "object",
+        properties: {
+          cookie: { type: "string", default: "" },
+          cookieRef: { type: "string", default: "MIMO_CONSOLE_COOKIE" },
+          planTotalTokens: { type: "number", default: 500000000 },
+          pillPosition: { type: "string", default: "header" },
+          wrapToolbar: { type: "boolean", default: true },
+          hideViewWhenNotMiMo: { type: "boolean", default: false },
+          visionRouting: { type: "boolean", default: false },
+          visionRoutingTextModels: { type: "boolean", default: false },
+        },
+      },
+    },
+  });
+  return resolve;
+}
+
 export function buildMimoSettingsSchema(ctx) {
   const factory = loadSchemaFactory(ctx);
   if (!factory) return undefined;
@@ -562,7 +620,7 @@ export async function aggregateLocalUsage(dshHome) {
  * 都由 `dsh-token-usage-counter` 提供，而它并不总在 profile 里（本机当前 profile
  * 就没装）。缺席时的两处症状：
  *   1. `token-usage/` 目录不存在 → 本地统计永远 ENOENT；
- *   2. `/dsh-mimo-usage/session` 恒返回 null → 胶囊与详情页的
+ *   2. `/dsh-mimo-extension/session` 恒返回 null → 胶囊与详情页的
  *      「当前会话用量」恒为 0（summary.sessionTokens 也取不到）。
  *
  * 本实现直接读会话事件流自建统计（`assistant/message.data.usage`）：
@@ -1541,7 +1599,7 @@ export function apply(ctx, config) {
 
   // 内置会话/本日本月用量统计：dsh-token-usage-counter 装配时以它为准，
   // 未装配时（或它没有该会话数据）用本插件从 session 事件里自建的统计。
-  // 没有它，`/dsh-mimo-usage/session` 会恒返回 null → 会话用量恒为 0。
+  // 没有它，`/dsh-mimo-extension/session` 会恒返回 null → 会话用量恒为 0。
   deps.localCounter = createLocalUsageCounter(ctx);
 
   // provider 的 API 地址 —— **两级来源**：
@@ -1761,10 +1819,10 @@ export function apply(ctx, config) {
     const allowTextOnly = want && mimo.visionRoutingTextModels === true;
     const { changed, error } = await deps.applyVisionRouting(want, allowTextOnly);
     if (error) {
-      ctx.logger?.warn?.(`[dsh-mimo-usage] 视觉路由同步失败：${error}`);
+      ctx.logger?.warn?.(`[dsh-mimo-extension] 视觉路由同步失败：${error}`);
     } else if (changed.length) {
       ctx.logger?.info?.(
-        `[dsh-mimo-usage] 视觉路由已${want ? "开启" : "关闭"}（含文本模型：${allowTextOnly ? "是" : "否"}）：${changed.join(", ")}`,
+        `[dsh-mimo-extension] 视觉路由已${want ? "开启" : "关闭"}（含文本模型：${allowTextOnly ? "是" : "否"}）：${changed.join(", ")}`,
       );
     }
     return { changed, error };
@@ -1777,7 +1835,7 @@ export function apply(ctx, config) {
   // 事件流的语义是"最近一次真的用过什么"，切了模型但没发消息时会滞后。
   deps.modelTracker = createModelTracker(ctx, getCounter, () => deps.localCounter, readDefaultModel);
 
-  // ---- 设置持久化（settings.yaml 的 dsh-mimo-usage 命名空间）----
+  // ---- 设置持久化（settings.yaml 的 dsh-mimo-extension 命名空间）----
   // 用户在「MiMo 用量」页填写的 Cookie / 套餐总量 / 胶囊位置等存这里，
   // 优先级高于 patch 层 config（config 作为组成基线）。
   let userSettings = null;
@@ -1785,6 +1843,61 @@ export function apply(ctx, config) {
     // 先抓住 settings 服务：除了注册本插件命名空间，还要用它读
     // `llm-pi-ai` 的 providers.<id>.baseURL（判定计费类型用）。
     settingsService = settingsCtx?.settings ?? null;
+
+    /**
+     * 把旧命名空间（`dsh-mimo-extension`）的用户配置迁移到新命名空间
+     * （`dsh-mimo-extension`）。
+     *
+     * **为什么必须做**：插件 2026-09-27 改名，而用户的配置（**含 503 字符的
+     * Cookie**、套餐总量、胶囊位置、各开关）都存在旧段落里。直接换名 = 用户
+     * 凭空丢配置，且旧段变成没人管的孤儿数据。
+     *
+     * **读旧段为什么不能走 `get()`**：`settings.get(ns)` 只返回**已注册**命名空间的
+     * 解析值，而旧段在新名字下**没有任何插件注册它** → 恒返回 undefined。
+     * 所以用 `section(ns)` —— 它读的是**原始文档**（`this.document[ns]`），
+     * 不要求注册。⚠ 别改成 `get()`，那样迁移会静默什么都不做。
+     *
+     * **幂等且单向**：只在「新段为空/无有效字段」且「旧段有内容」时搬一次；
+     * 搬完**不删旧段**（留作回滚依据，用户可自行清理）。
+     *
+     * @returns {Promise<string>} 迁移结果描述（供日志/自检）
+     */
+    const migrateLegacySettings = async () => {
+      const svc = settingsService;
+      if (!svc || typeof svc.section !== "function" || typeof svc.update !== "function") {
+        return "skip: 设置服务不可用";
+      }
+      let legacy;
+      try {
+        legacy = svc.section(LEGACY_SETTINGS_NS);
+      } catch {
+        return "skip: 旧段读取失败";
+      }
+      if (!legacy || typeof legacy !== "object") return "skip: 无旧配置";
+      // 本插件在旧段里的实际字段都在 `mimo` 子对象下
+      const legacyMimo = legacy.mimo;
+      if (!legacyMimo || typeof legacyMimo !== "object" || Object.keys(legacyMimo).length === 0) {
+        return "skip: 旧段为空";
+      }
+      // 新段已有内容 → 不覆盖（用户已经在新名字下配置过）
+      let current;
+      try {
+        current = svc.section(SETTINGS_NS);
+      } catch {
+        current = undefined;
+      }
+      const currentMimo = current?.mimo;
+      if (currentMimo && typeof currentMimo === "object" && Object.keys(currentMimo).length > 0) {
+        return "skip: 新段已有配置（不覆盖）";
+      }
+      try {
+        await svc.update(SETTINGS_NS, { mimo: legacyMimo });
+        return `migrated: ${Object.keys(legacyMimo).join(", ")}`;
+      } catch (error) {
+        return `failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    };
+    deps.migrateLegacySettings = migrateLegacySettings;
     try {
       // 真 schemastery 才注册：手写 schema 缺 toJSON 会让 describe() 把整个
       // 设置页一起拖垮（见 buildMimoSettingsSchema 的说明）。
@@ -1799,23 +1912,59 @@ export function apply(ctx, config) {
         /* 已内部记警告 */
       });
 
-      const schema = buildMimoSettingsSchema(settingsCtx);
-      if (!schema) {
+      // schema 优先用真 schemastery（自带 secret 标记与完整元数据）；
+      // 拿不到时退到**兜底 schema**，只为让注册成功 ——
+      // 注册成功才有写权限，否则连改名迁移都写不进来（见 buildFallbackSettingsSchema）。
+      const schema = buildMimoSettingsSchema(settingsCtx) ?? buildFallbackSettingsSchema();
+      if (!buildMimoSettingsSchema(settingsCtx)) {
         ctx.logger?.warn?.(
-          "[dsh-mimo-usage] 拿不到 @deepseek-ai/schemastery，跳过设置命名空间注册：" +
-            "本插件配置在设置页里会是只读（patch 层 config 仍生效），其它插件的设置页不受影响",
+          "[dsh-mimo-extension] 拿不到 @deepseek-ai/schemastery，改用兜底 schema 注册：" +
+            "配置仍可读写（含旧命名空间迁移），但设置页里 Cookie 不会被标成密文",
         );
-        return;
       }
       const scope = settingsCtx.settings.register(SETTINGS_NS, schema, { base: config ?? {} });
       userSettings = scope;
       scope.watch(() => {
         deps.clearOfficialCache?.();   // Cookie 改了：官方数据必须重取
       });
+
+      // 迁移调用**不在这里** —— 见下方独立的 inject 块。
+      // 放在这里会有两个坑：
+      //   ① 它位于 `if (!schema) return` **之后** → 拿不到 schemastery 时静默失效
+      //      （视觉路由踩过同一个坑）；
+      //   ② 而且它**必须**在 register 之后（`settings.update` 要求 ns 已注册，
+      //      否则直接抛错）—— 两个约束叠在一起，只能解耦。
     } catch (error) {
-      ctx.logger?.warn?.("[dsh-mimo-usage] settings 注册失败：%s", error instanceof Error ? error.message : String(error));
+      ctx.logger?.warn?.("[dsh-mimo-extension] settings 注册失败：%s", error instanceof Error ? error.message : String(error));
     }
   });
+  // ── 改名迁移（独立 inject）────────────────────────────────────────────
+  //
+  // 为什么单独一个 inject 块，而不是塞进上面那个：
+  //   · 它需要 settings 服务（读旧段 + 写新段）
+  //   · **不能受本插件 schema 注册成败影响** —— 拿不到 schemastery 时，
+  //     上面那个块会 `return`，迁移就静默不执行（用户的 Cookie 就"丢了"）
+  //   · 而写入又要求命名空间**已注册**，所以必须晚于 register
+  // 独立成块后：inject 回调在 settings 就绪时执行，位置在注册块之后，
+  // 时序天然满足"先注册、后写"，且与 schema 是否可用无关。
+  ctx.inject(["settings"], (migrateCtx) => {
+    // 注册块（上方）已在同一轮 inject 中执行；此处额外等一个微任务，
+    // 保证 registrations 已就绪（inject 回调按注册顺序同步执行，
+    // 但 register 内部用 ctx.effect 登记，给一拍更稳）。
+    Promise.resolve()
+      .then(() => deps.migrateLegacySettings?.())
+      .then((r) => {
+        if (r && r.startsWith("migrated")) {
+          ctx.logger?.info?.(`[dsh-mimo-extension] 已从旧命名空间迁移配置：${r}`);
+        } else if (r && r.startsWith("failed")) {
+          ctx.logger?.warn?.(`[dsh-mimo-extension] 配置迁移失败：${r}`);
+        }
+      })
+      .catch(() => {
+        /* 迁移失败不影响插件启动 */
+      });
+  });
+
   /** 用户层设置合并后的 mimo 配置（用户层 > patch config）。 */
   const currentMimo = () => {
     const fromUser = userSettings?.get?.() ?? {};
@@ -1843,7 +1992,7 @@ export function apply(ctx, config) {
     return inflight;
   };
 
-  // ---- web 路由：/api/dsh-mimo-usage/*（软依赖 webServer）----
+  // ---- web 路由：/api/dsh-mimo-extension/*（软依赖 webServer）----
   ctx.inject(["webServer"], (webCtx) => {
     const webServer = webCtx.webServer;
     if (!webServer || typeof webServer.register !== "function") return;
@@ -1989,7 +2138,7 @@ export function apply(ctx, config) {
             }
           },
         }),
-      "dsh-mimo-usage: /api routes",
+      "dsh-mimo-extension: /api routes",
     );
   });
 

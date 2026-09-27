@@ -1,5 +1,5 @@
 /**
- * dsh-mimo-usage 自检脚本
+ * dsh-mimo-extension 自检脚本
  *
  * 无需 react / 浏览器：静态扫描 + 用忠实模拟 Cordis 上下文的 Proxy 调用 apply，
  * 专门抓住「访问未 inject 的服务属性」这类只在真实宿主里才暴露的 bug。
@@ -50,8 +50,8 @@ try {
 }
 if (patch) {
   const row = patch?.[0]?.insert?.[0];
-  ok(row?.id === "mimo-usage", "patch insert.id 为 mimo-usage");
-  ok(row?.name === "dsh-mimo-usage", "patch insert.name 为 dsh-mimo-usage");
+  ok(row?.id === "mimo-extension", "patch insert.id 为 mimo-extension");
+  ok(row?.name === "dsh-mimo-extension", "patch insert.name 为 dsh-mimo-extension");
   ok(row?.config?.mimo !== undefined, "patch 携带 config.mimo");
   // 缩进塌陷会让 mimo 变成字符串或丢失，这里显式确认嵌套结构
   ok(typeof row?.config?.mimo === "object" && row.config.mimo !== null, "config.mimo 是对象（缩进未塌陷）");
@@ -62,7 +62,7 @@ if (patch) {
 // ---------- 3. host.js 加载与注册 ----------
 const host = await import(join(here, "host.js"));
 ok(typeof host.apply === "function", "host.js 导出 apply");
-ok(host.name === "mimo-usage", "host 插件名为 mimo-usage");
+ok(host.name === "mimo-extension", "host 插件名为 mimo-extension");
 ok(Array.isArray(host.inject), "host 声明 inject");
 
 // ---------- 4. client.js：用“会抛错的 Proxy”模拟 Cordis ----------
@@ -115,7 +115,7 @@ function makeCordisLikeCtx(declaredInject, { onRegister } = {}) {
       const scope = makeCordisLikeCtx([...declaredInject, ...names], { onRegister });
       return fn(scope);
     },
-    fiber: { entry: { options: { name: "dsh-mimo-usage" } } },
+    fiber: { entry: { options: { name: "dsh-mimo-extension" } } },
   };
 
   return {
@@ -161,7 +161,7 @@ try {
 }
 globalThis.window = realWindow;
 ok(loaded !== null, "client.js 调用了 __ModuleLoader__.load");
-ok(loaded?.id === "dsh-mimo-usage", "client bundle id 为 dsh-mimo-usage");
+ok(loaded?.id === "dsh-mimo-extension", "client bundle id 为 dsh-mimo-extension");
 
 if (loaded) {
   // 用假 react 构造模块（不需要真实 react）
@@ -204,8 +204,8 @@ if (loaded) {
     const pill = ctx.__registered.find((r) => r.slot.includes("header.actions"))?.options;
     const view = ctx.__registered.find((r) => r.slot === "conversation.view")?.options;
     ok(pill?.order === 30, "胶囊 order=30（排在对话/轨迹之后）");
-    ok(pill?.id === "mimo-usage-pill", "胶囊 id 正确");
-    ok(view?.id === "mimo-usage", "视图 id=mimo-usage");
+    ok(pill?.id === "mimo-extension-pill", "胶囊 id 正确");
+    ok(view?.id === "mimo-extension", "视图 id=mimo-extension");
     ok(view?.order === 15, "视图 order=15（轨迹之后、额度之前）");
 
     // 胶囊可选位置：三处槽位映射必须都在源码中就位（运行时按偏好迁移）
@@ -226,10 +226,10 @@ if (loaded) {
     // 路由前缀必须避开 /api/*：DSH 核心对 /api 前缀做严格 Origin===Host 校验，
     // 经 fnOS 网关访问时会 403，导致设置页无法保存。
     const hostSrc = readFileSync(join(here, "host.js"), "utf8");
-    ok(/const ROUTE_PREFIX = "\/dsh-mimo-usage"/.test(hostSrc), "宿主路由前缀为 /dsh-mimo-usage（避开 /api）");
-    ok(!/path: "\/api\/dsh-mimo-usage"/.test(hostSrc), "宿主未使用 /api/dsh-mimo-usage（会被核心拦截）");
-    ok(/`\$\{ROUTE_PREFIX\}\/\$\{endpoint\}`/.test(clientSource), "客户端请求 /dsh-mimo-usage/*（与宿主前缀一致）");
-    ok(!clientSource.includes("/api/dsh-mimo-usage"), "客户端未残留 /api/dsh-mimo-usage 路径");
+    ok(/const ROUTE_PREFIX = "\/dsh-mimo-extension"/.test(hostSrc), "宿主路由前缀为 /dsh-mimo-extension（避开 /api）");
+    ok(!/path: "\/api\/dsh-mimo-extension"/.test(hostSrc), "宿主未使用 /api/dsh-mimo-extension（会被核心拦截）");
+    ok(/`\$\{ROUTE_PREFIX\}\/\$\{endpoint\}`/.test(clientSource), "客户端请求 /dsh-mimo-extension/*（与宿主前缀一致）");
+    ok(!clientSource.includes("/api/dsh-mimo-extension"), "客户端未残留 /api/dsh-mimo-extension 路径");
     ok(/x-forwarded-host/.test(hostSrc), "isTrusted 容忍网关改写的 Host（X-Forwarded-Host）");
 
     // fnOS 网关前缀自适应（方案 A）：平台把页面挂在 /app/dsh-fnos/dsh/ 下并注入
@@ -275,13 +275,13 @@ if (loaded) {
       const saved = globalThis.__FNOS_GATEWAY_PREFIX__;
       try {
         delete globalThis.__FNOS_GATEWAY_PREFIX__;
-        ok(gw("/dsh-mimo-usage/ping") === "/dsh-mimo-usage/ping", "无前缀环境下路径保持不变（直连 3081）");
+        ok(gw("/dsh-mimo-extension/ping") === "/dsh-mimo-extension/ping", "无前缀环境下路径保持不变（直连 3081）");
         globalThis.__FNOS_GATEWAY_PREFIX__ = "/app/dsh-fnos/dsh";
-        ok(gw("/dsh-mimo-usage/ping") === "/app/dsh-fnos/dsh/dsh-mimo-usage/ping", "有前缀环境下正确拼接（经网关 3080）");
+        ok(gw("/dsh-mimo-extension/ping") === "/app/dsh-fnos/dsh/dsh-mimo-extension/ping", "有前缀环境下正确拼接（经网关 3080）");
         globalThis.__FNOS_GATEWAY_PREFIX__ = "/app/dsh-fnos/dsh/";
-        ok(gw("/dsh-mimo-usage/ping") === "/app/dsh-fnos/dsh/dsh-mimo-usage/ping", "前缀带尾部斜杠时不拼出双斜杠");
+        ok(gw("/dsh-mimo-extension/ping") === "/app/dsh-fnos/dsh/dsh-mimo-extension/ping", "前缀带尾部斜杠时不拼出双斜杠");
         globalThis.__FNOS_GATEWAY_PREFIX__ = "";
-        ok(gw("/dsh-mimo-usage/ping") === "/dsh-mimo-usage/ping", "空前缀退化为无前缀");
+        ok(gw("/dsh-mimo-extension/ping") === "/dsh-mimo-extension/ping", "空前缀退化为无前缀");
       } finally {
         if (saved === undefined) delete globalThis.__FNOS_GATEWAY_PREFIX__;
         else globalThis.__FNOS_GATEWAY_PREFIX__ = saved;
@@ -515,7 +515,7 @@ if (loaded) {
           return stub;
         };
         try {
-          const [descriptor] = makeStub("dsh-mimo-usage", schema).describe({ redactSecrets: true });
+          const [descriptor] = makeStub("dsh-mimo-extension", schema).describe({ redactSecrets: true });
           ok(descriptor && typeof descriptor.schema === "object",
             "真实 describe() 未抛错（schema.toJSON 可用）");
           ok(!JSON.stringify(descriptor.value).includes("SECRET-COOKIE"),
@@ -550,7 +550,15 @@ if (loaded) {
       "未把手写函数直接注册进 settings（那是 describe() 抛错的根因）",
     );
     ok(/buildMimoSettingsSchema\(/.test(hostSource), "注册路径使用 buildMimoSettingsSchema()");
-    ok(/跳过设置命名空间注册/.test(hostSource), "拿不到 schemastery 时跳过注册（而非注册残缺 schema）");
+    // 09-27 变更：不再"跳过注册"，而是退到**兜底 schema**。
+    // 原因：注册失败 = 连写权限都没有 → 改名迁移写不进去（用户的 Cookie 搬不过来）。
+    // 兜底 schema 仍必须提供 toJSON()，否则会把整个设置页拖垮（踩坑 1）。
+    ok(/buildFallbackSettingsSchema/.test(hostSource), "有兜底 schema 工厂");
+    ok(/buildMimoSettingsSchema\(settingsCtx\) \?\? buildFallbackSettingsSchema\(\)/.test(hostSource),
+      "拿不到 schemastery 时退到兜底 schema（保住写权限，迁移才能落盘）");
+    ok(/resolve\.toJSON = \(\) => \(\{/.test(hostSource),
+      "★ 兜底 schema 也提供 toJSON()（缺它会让整个设置页抛错）");
+    ok(/改用兜底 schema 注册/.test(hostSource), "降级时会打日志说明（不是静默）");
   }
 }
 
@@ -775,6 +783,37 @@ if (loaded) {
   ok(url("https://token-plan-sgp.xiaomimimo.com/v1") === "token-plan", "token-plan-sgp → Token Plan");
   ok(url("https://token-plan-ams.xiaomimimo.com/v1") === "token-plan", "token-plan-ams → Token Plan");
   ok(url("https://api.xiaomimimo.com/v1") === "payg", "api.xiaomimimo.com → 按量计费");
+
+  // ---------- 改名 + 旧配置迁移（09-27 加 0.3.0）----------
+  // 插件 `dsh-mimo-usage` → `dsh-mimo-extension`；用户配置（**含 Cookie**）
+  // 存在旧命名空间里，必须自动搬到新段，否则用户凭空丢配置。
+  {
+    const src = readFileSync(join(here, "host.js"), "utf8");
+    ok(host.name === "mimo-extension", `插件 id = mimo-extension（实为 ${host.name}）`);
+    ok(/const SETTINGS_NS = "dsh-mimo-extension";/.test(src), "设置命名空间用新名");
+    // ★ 旧名必须**只**作为迁移来源保留
+    ok(/const LEGACY_SETTINGS_NS = "dsh-mimo-usage";/.test(src), "保留旧命名空间常量作迁移来源");
+    const legacyUses = (src.match(/LEGACY_SETTINGS_NS/g) || []).length;
+    ok(legacyUses >= 2, `LEGACY_SETTINGS_NS 被真正使用（${legacyUses} 处：定义 + 读取）`);
+    ok(/svc\.section\(LEGACY_SETTINGS_NS\)/.test(src),
+      "★ 用 settings.section() 读旧段（不是 get()）");
+    // ⚠ get() 只返回已注册命名空间 → 旧段读不到，迁移会静默失效
+    ok(!/settingsService\.get\(LEGACY_SETTINGS_NS\)/.test(src),
+      "★ 不用 get() 读旧段（它只认已注册 ns，会静默失败）");
+    // 幂等 + 不覆盖
+    ok(/if \(currentMimo && typeof currentMimo === "object" && Object\.keys\(currentMimo\)\.length > 0\)/.test(src),
+      "新段已有配置时不覆盖（幂等）");
+    ok(/const legacyMimo = legacy\.mimo;/.test(src), "只迁移 mimo 子对象");
+    // 🔴 顺序：update 要求 ns 已注册 → 迁移必须在 register 之后
+    const regIdx = src.indexOf("settingsCtx.settings.register(SETTINGS_NS");
+    const migIdx = src.indexOf("deps\n        .migrateLegacySettings?.()") >= 0
+      ? src.indexOf(".migrateLegacySettings?.()")
+      : src.indexOf("migrateLegacySettings?.()");
+    ok(regIdx > 0 && migIdx > 0 && regIdx < migIdx,
+      "★ 迁移调用在 register **之后**（update 要求命名空间已注册）");
+    // 迁移不该删旧段（留作回滚）
+    ok(!/unset.*LEGACY_SETTINGS_NS|delete.*legacy/i.test(src), "不删除旧段（留作回滚依据）");
+  }
 
   // ---------- 视觉路由（09-27 加）----------
   // 用户需求：在详情页加开关，启用 MiMo 的视觉路由。

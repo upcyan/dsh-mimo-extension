@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// dsh-mimo-usage：浏览器半边（client.js）的离线自检。
+// dsh-mimo-extension：浏览器半边（client.js）的离线自检。
 //
 // 为什么需要它：client 代码只在真浏览器里由宿主调用，改坏了不容易发现
 // （症状就是"装了没生效"——胶囊和详情页一起消失）。这里用最小 mock 把
@@ -10,7 +10,7 @@
 //   4. 「MiMo 用量」详情 tab 与胶囊槽位是否真的注册上；
 //   5. 自诊断探针（/ping 的 stage）是否按预期推进。
 //
-// 运行：cd dsh-mimo-usage && node check-client.mjs
+// 运行：cd dsh-mimo-extension && node check-client.mjs
 
 import { readFileSync } from "node:fs";
 
@@ -35,7 +35,7 @@ try {
   process.exit(1);
 }
 
-ok(loaded?.id === "dsh-mimo-usage", `模块 id = ${loaded?.id}`);
+ok(loaded?.id === "dsh-mimo-extension", `模块 id = ${loaded?.id}`);
 
 // ---------- 2) 工厂与导出形态 ----------
 const react = {
@@ -77,7 +77,7 @@ function makeCtx({ entryOptions, existingViewEntries, noEntriesOfSlot } = {}) {
   const declared = new Set(plugin?.inject ?? []);
   const registrations = [];
   const target = {
-    fiber: { name: "dsh-mimo-usage", entry: { options: entryOptions } },
+    fiber: { name: "dsh-mimo-extension", entry: { options: entryOptions } },
     logger: { warn: () => {}, error: () => {}, info: () => {} },
     locale: { t: (k) => k, onChange: () => () => {}, get: () => "zh-CN" },
     slots: {
@@ -125,19 +125,19 @@ function run(scene) {
   } catch (error) {
     thrown = error;
   }
-  const viewTab = registrations.some((r) => r.kind === "register" && r.slot === "conversation.view" && r.id === "mimo-usage");
+  const viewTab = registrations.some((r) => r.kind === "register" && r.slot === "conversation.view" && r.id === "mimo-extension");
   const pill = registrations.some((r) => r.kind === "inject" && /^conversation\.(session\.header\.actions|input\.right|composer\.dock)$/.test(r.slot));
   return { thrown, viewTab, pill, registrations };
 }
 
 // ---------- 4) 各种 entry 名下 apply 都要真正注册上 ----------
 const SCENARIOS = [
-  { label: "entry.options.name = dsh-mimo-usage", entryOptions: { name: "dsh-mimo-usage" }, expect: "register" },
+  { label: "entry.options.name = dsh-mimo-extension", entryOptions: { name: "dsh-mimo-extension" }, expect: "register" },
   { label: "entry.options.name 缺失", entryOptions: {}, expect: "register" },
   { label: "entry.options 为 undefined", entryOptions: undefined, expect: "register" },
   // 历史 bug：严格相等判断会在这里静默 return，胶囊+详情页一起消失
-  { label: "别名 dsh-mimo-usage/client（历史 bug 场景）", entryOptions: { name: "dsh-mimo-usage/client" }, expect: "register" },
-  { label: "带路径后缀 dsh-mimo-usage/client.js", entryOptions: { name: "dsh-mimo-usage/client.js" }, expect: "register" },
+  { label: "别名 dsh-mimo-extension/client（历史 bug 场景）", entryOptions: { name: "dsh-mimo-extension/client" }, expect: "register" },
+  { label: "带路径后缀 dsh-mimo-extension/client.js", entryOptions: { name: "dsh-mimo-extension/client.js" }, expect: "register" },
   // 明确是别的插件 → 应该跳过（避免串台）
   { label: "别的插件 dshmarket", entryOptions: { name: "dshmarket" }, expect: "skip" },
 ];
@@ -156,21 +156,21 @@ for (const scene of SCENARIOS) {
 // 重复装载兜底：槽位里已有本插件 tab → 收手
 {
   const { viewTab } = run({
-    entryOptions: { name: "dsh-mimo-usage" },
-    existingViewEntries: [{ options: { id: "mimo-usage" } }],
+    entryOptions: { name: "dsh-mimo-extension" },
+    existingViewEntries: [{ options: { id: "mimo-extension" } }],
   });
-  ok(!viewTab, "槽位里已有 mimo-usage tab → 跳过重复装载");
+  ok(!viewTab, "槽位里已有 mimo-extension tab → 跳过重复装载");
 }
 // 没有 entriesOfSlot 的老版本：不能因此抛错
 {
-  const { thrown, viewTab } = run({ entryOptions: { name: "dsh-mimo-usage" }, noEntriesOfSlot: true });
+  const { thrown, viewTab } = run({ entryOptions: { name: "dsh-mimo-extension" }, noEntriesOfSlot: true });
   ok(!thrown && viewTab, "宿主没有 entriesOfSlot → 照常注册（不抛错）");
 }
 
 // 详情 tab 的顺序与组件
 {
-  const { registrations } = run({ entryOptions: { name: "dsh-mimo-usage" } });
-  const tab = registrations.find((r) => r.kind === "register" && r.id === "mimo-usage");
+  const { registrations } = run({ entryOptions: { name: "dsh-mimo-extension" } });
+  const tab = registrations.find((r) => r.kind === "register" && r.id === "mimo-extension");
   ok(tab?.order === 15 && tab?.hasComponent === true, `详情 tab order=${tab?.order} 组件齐=${tab?.hasComponent}`);
 }
 
@@ -331,7 +331,7 @@ for (const scene of SCENARIOS) {
   ok(/label: \(\) => t\("view\.label"\)/.test(src), "注册时仍带 label（tab 文字来源）");
   // 探针：apply 层拿不到 useProjection，必须靠组件回传
   ok(/const ModelProbe = \(props\) =>/.test(src), "有 ModelProbe 探针组件");
-  ok(/conversation\.composer\.dock[\s\S]{0,400}?mimo-usage-probe/.test(src),
+  ok(/conversation\.composer\.dock[\s\S]{0,400}?mimo-extension-probe/.test(src),
     "探针挂在常驻槽位 composer.dock");
   ok(/return null; \/\/ 不渲染任何东西/.test(src), "探针不渲染像素");
   ok(/const onSelection = \(\{ provider, model }\) =>/.test(src), "探针经 onSelection 回传选中模型");
