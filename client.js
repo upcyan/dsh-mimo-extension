@@ -289,6 +289,7 @@
       "view.noMimoTitle": "本会话尚未使用 MiMo",
       "view.noMimoBody": "上面的会话用量为 0 是正常的 —— 本会话只用了 {providers}。下方「套餐额度」是账号级的，与本会话无关。",
       "view.notMimoModel": "当前模型属于 {provider}，不是 MiMo —— 下面的套餐额度是 MiMo 账号级的，不随当前模型变化。",
+      "view.hiddenNotMimo": "当前模型不是 MiMo，已按设置隐藏本页内容。想始终显示这一页，请在下方「MiMo 额度配置」里关闭「非 MiMo 模型时隐藏详情页」。",
       "view.noData": "暂无数据",
       "view.priceMissing": "未配置单价，按 0 估算",
       "view.src.official": "官方",
@@ -309,6 +310,10 @@
       "cfg.pos.toolbar": "输入框工具栏",
       "cfg.pos.above": "输入框上方",
       "cfg.pos.hidden": "不显示胶囊",
+      "cfg.hideViewWhenNotMiMo": "非 MiMo 模型时隐藏「MiMo 用量」详情页",
+      "cfg.hideViewWhenNotMiMoHint": "默认关闭：无论当前模型是什么都显示该页。开启后，用别的模型时这一页只提示、不显示用量数据。",
+      "cfg.hideViewWhenNotMiMo": "Hide the MiMo usage tab when the model is not MiMo",
+      "cfg.hideViewWhenNotMiMoHint": "Off by default: the tab is always available. When on, using another model leaves the tab showing a notice instead of usage data.",
       "cfg.wrapToolbar": "允许输入框工具栏自动换行（防止工具图标挤占重叠）",
       "cfg.save": "保存",
       "cfg.saving": "保存中…",
@@ -396,6 +401,7 @@
       "view.noMimoTitle": "This session has not used MiMo yet",
       "view.noMimoBody": "The zero session usage above is expected — this session only used {providers}. The plan quota below is account-level and unrelated to this session.",
       "view.notMimoModel": "The current model belongs to {provider}, not MiMo — the plan quota below is MiMo account-level and does not follow the current model.",
+      "view.hiddenNotMimo": "The current model is not MiMo, so this page is hidden per your setting. To always show it, turn off \"Hide this tab when the model is not MiMo\" under MiMo quota settings below.",
       "view.noData": "No data",
       "view.priceMissing": "No price configured; estimated at 0",
       "view.src.official": "official",
@@ -416,6 +422,8 @@
       "cfg.pos.toolbar": "Composer toolbar",
       "cfg.pos.above": "Above the composer",
       "cfg.pos.hidden": "Do not show the pill",
+      "cfg.hideViewWhenNotMiMo": "Hide the MiMo usage tab when the model is not MiMo",
+      "cfg.hideViewWhenNotMiMoHint": "Off by default: the tab is always available. When on, using another model leaves the tab showing a notice instead of usage data.",
       "cfg.wrapToolbar": "Let the composer toolbar wrap (prevents tool icons from overlapping)",
       "cfg.save": "Save",
       "cfg.saving": "Saving…",
@@ -463,8 +471,28 @@
       return c.toFixed(2);
     }
 
-    /** 判断一个 provider 是否属于 MiMo 通道（与胶囊可见性同一规则）。 */
-    const isMiMoProviderName = (p) => typeof p === "string" && /mimo/i.test(p);
+    /**
+     * 判断一个 provider 名是否属于小米 MiMo 通道（**与 host 的 `isMiMoProvider` 同规则**）。
+     *
+     * ⚠ 不能只匹配 `/mimo/i`：平台内置的 provider 叫
+     * `xiaomi-token-plan-cn` / `xiaomi-token-plan-sgp` / `xiaomi-token-plan-ams`
+     * （套餐）与 `xiaomi`（按量）—— **都不含 `mimo`**，但它们供的模型是
+     * `mimo-v2.5` / `mimo-v2.5-pro`。旧规则会把这些判成"非 MiMo"。
+     *
+     * 注意：这是**名字线索**。权威判据是 host 下发的 `summary.isMiMo`
+     * （它按解析后的 API 地址判定，见 host 的 `resolveMiMoChannel`）——
+     * 本函数只在拿不到 host 结论时兜底。
+     */
+    const isMiMoProviderName = (p) =>
+      typeof p === "string" && (/mimo/i.test(p) || /^xiaomi(-|$)/i.test(p));
+
+    /**
+     * 判断一组 provider/model 是否属于 MiMo（**会话明细专用**）。
+     * `/session` 的 `models[]` 只有 provider + model、**没有 baseURL**，
+     * 所以这里只能按名字匹配 —— 因此**额外看 model 名**（`mimo-v2.5`）。
+     */
+    const isMiMoEntry = (provider, model) =>
+      isMiMoProviderName(provider) || (typeof model === "string" && /mimo/i.test(model));
 
     /**
      * 把一个会话的用量**按渠道归属拆开**。
@@ -511,8 +539,8 @@
           },
           { tokens: 0, calls: 0 },
         );
-      const mimoModels = models.filter((m) => isMiMoProviderName(m.provider));
-      const otherModels = models.filter((m) => !isMiMoProviderName(m.provider));
+      const mimoModels = models.filter((m) => isMiMoEntry(m.provider, m.model));
+      const otherModels = models.filter((m) => !isMiMoEntry(m.provider, m.model));
       const mimo = pick(mimoModels);
       const other = pick(otherModels);
       // 按 provider 归并非 MiMo 部分（同一 provider 可能有多个模型）
@@ -573,7 +601,7 @@
       }
       // 以下为 host billingTypeFor 的同规则降级（省略 overrides/baseURL 两条）
       if (/token-plan/i.test(selectedProvider)) return "token-plan";
-      if (/mimo/i.test(selectedProvider)) {
+      if (isMiMoProviderName(selectedProvider)) {
         const status = summary.planStatus;
         return status === "expired" || status === "none" ? "payg" : "token-plan";
       }
@@ -665,11 +693,22 @@
     }
 
     /** 全局共享的 UI 偏好（由 summary 拉取，胶囊与详情页共用）。 */
-    const uiPrefs = { position: "header", wrapToolbar: true, loaded: false, listeners: new Set() };
+    const uiPrefs = {
+      position: "header",
+      wrapToolbar: true,
+      // 非 MiMo 模型时隐藏详情页（用户可选，默认关闭）
+      hideViewWhenNotMiMo: false,
+      loaded: false,
+      listeners: new Set(),
+    };
     function setUiPrefs(next) {
-      const changed = uiPrefs.position !== next.position || uiPrefs.wrapToolbar !== next.wrapToolbar;
+      const changed =
+        uiPrefs.position !== next.position ||
+        uiPrefs.wrapToolbar !== next.wrapToolbar ||
+        uiPrefs.hideViewWhenNotMiMo !== next.hideViewWhenNotMiMo;
       uiPrefs.position = next.position;
       uiPrefs.wrapToolbar = next.wrapToolbar;
+      if (typeof next.hideViewWhenNotMiMo === "boolean") uiPrefs.hideViewWhenNotMiMo = next.hideViewWhenNotMiMo;
       uiPrefs.loaded = true;
       if (changed) for (const fn of [...uiPrefs.listeners]) {
         try {
@@ -686,7 +725,12 @@
         uiPrefs.listeners.add(fn);
         return () => uiPrefs.listeners.delete(fn);
       }, []);
-      return { position: uiPrefs.position, wrapToolbar: uiPrefs.wrapToolbar, loaded: uiPrefs.loaded };
+      return {
+        position: uiPrefs.position,
+        wrapToolbar: uiPrefs.wrapToolbar,
+        hideViewWhenNotMiMo: uiPrefs.hideViewWhenNotMiMo,
+        loaded: uiPrefs.loaded,
+      };
     }
 
     /**
@@ -721,7 +765,12 @@
           setSummary(data);
           setFailed(false);
           // summary 携带 UI 偏好：同步到共享状态，供其它位置的胶囊/详情页感知
-          if (data?.ui) setUiPrefs({ position: data.ui.pillPosition ?? "header", wrapToolbar: data.ui.wrapToolbar !== false });
+          if (data?.ui)
+            setUiPrefs({
+              position: data.ui.pillPosition ?? "header",
+              wrapToolbar: data.ui.wrapToolbar !== false,
+              hideViewWhenNotMiMo: data.ui.hideViewWhenNotMiMo === true,
+            });
         } catch {
           if (epoch === epochRef.current) setFailed(true);
           return;
@@ -794,7 +843,27 @@
       })();
       // 投影缺失时才退回 summary（它是"最近一次真实请求"的归属）
       const selectedProvider = selected?.provider ?? (summary?.provider || undefined);
-      const providerIsMiMo = selectedProvider === undefined ? true : /mimo/i.test(selectedProvider);
+      const selectedModel = selected?.model ?? summary?.model ?? undefined;
+
+      // ── 「是否 MiMo」判定：**优先用 host 的地址级结论** ──────────────
+      //
+      // host 侧 `resolveMiMoChannel()` 是按**解析后的 API 地址**判的
+      // （`xiaomimimo.com` 域名才算），比名字可靠 —— 名字会两头骗人：
+      //   · 平台内置 provider `xiaomi-token-plan-cn` 不含 `mimo`（旧规则漏判）
+      //   · 自建网关可以叫 `mimo-xxx` 却指向别家（旧规则误判）
+      // 所以：host 结论与当前选中 provider **一致**时直接采信；
+      // 否则（刚切模型、summary 还没跟上）退回名字规则兜底。
+      const providerIsMiMo = (() => {
+        const hostSays = typeof summary?.isMiMo === "boolean" ? summary.isMiMo : undefined;
+        const hostProvider = summary?.provider;
+        // host 结论只对它自己那个 provider 有效
+        if (hostSays !== undefined && hostProvider && hostProvider === selectedProvider) {
+          return hostSays;
+        }
+        // 兜底：名字线索（provider 名或 model 名命中）
+        if (selectedProvider === undefined && !selectedModel) return true; // 读不到 → 保守显示
+        return isMiMoEntry(selectedProvider, selectedModel);
+      })();
       // 弹窗「当前模型」显示的值：投影优先
       const selectedModelLabel = (() => {
         if (selected?.provider && selected?.model) return `${selected.provider}/${selected.model}`;
@@ -1436,11 +1505,11 @@
         if (!session || billingType !== "payg" || !price) return null;
         // 无分渠道明细时无法只取 MiMo 部分 → 不给结论，避免报一个偏高的数
         if (sessionSplit && !sessionSplit.attributed) return null;
-        const isMimo = (p) => isMiMoProviderName(p);
+        const isMimo = (p, m) => isMiMoEntry(p, m);
         const models = Array.isArray(session.models) ? session.models : [];
         if (models.length === 0) return null;
         // 只有单一 MiMo 渠道时，整会话的 input/output 就是 MiMo 的，可精确计算
-        const onlyMimo = models.every((m) => isMimo(m.provider));
+        const onlyMimo = models.every((m) => isMimo(m.provider, m.model));
         if (!onlyMimo) {
           // 混合渠道：models[] 只有 totalTokens，没有 input/output 拆分，
           // 无法精确分摊 → 按 token 占比折算，并在 UI 标注"估算"
@@ -1466,7 +1535,7 @@
       // 费用是否为折算值（混合渠道时按占比估算）
       const chargeIsEstimated = useMemo(() => {
         const models = Array.isArray(session?.models) ? session.models : [];
-        return models.length > 0 && !models.every((m) => isMiMoProviderName(m.provider));
+        return models.length > 0 && !models.every((m) => isMiMoEntry(m.provider, m.model));
       }, [session]);
 
       // 响应式：窄屏（竖屏手机）改为单列 + 紧凑间距 + 可横滚表格。
@@ -1476,6 +1545,59 @@
       // "Rendered more hooks than during the previous render" 崩溃。
       const { narrow } = useViewport();
       const prefs = useUiPrefs();
+
+      // ── 可选的「非 MiMo 时隐藏详情页」门 ──────────────────────────────
+      //
+      // 与胶囊可见性同源（host 的地址级结论优先，名字兜底）。用户开启
+      // `hideViewWhenNotMiMo` 后，当前模型不是 MiMo 时整个 tab 不再有内容。
+      //
+      // ⚠ 这里返回 null 而**不是注销槽位注册** —— 平台自己的插件
+      // （如 `dsh-codebuddy`）就是这么做的：`conversation.view` 的 label/顺序
+      // 属于注册元数据，频繁注销/重注册会让标签行闪烁；而组件返回 null 时
+      // tab 内容为空、开销极小。**别改成动态注销**。
+      //
+      // ⚠ 必须在所有 hook 之后（本函数上方已有 useState/useEffect/useCallback/
+      // useMemo/useViewport/useUiPrefs），否则 hook 数量随渲染变化会崩。
+      const hideByPref = prefs.hideViewWhenNotMiMo === true;
+      const viewSelection = (() => {
+        try {
+          if (typeof props?.useProjection !== "function") return null;
+          const hit = props.useProjection("modelSelection")?.next ?? props.useProjection("modelSelection")?.lastUsed;
+          if (!hit) return null;
+          return {
+            provider: typeof hit.provider === "string" ? hit.provider : undefined,
+            model: typeof hit.model === "string" ? hit.model : undefined,
+          };
+        } catch {
+          return null;
+        }
+      })();
+      if (hideByPref) {
+        const hostSays = typeof summary?.isMiMo === "boolean" ? summary.isMiMo : undefined;
+        const sameProvider = summary?.provider && summary.provider === viewSelection?.provider;
+        // host 结论只对它自己那个 provider 有效；否则按名字兜底
+        const isMimo = hostSays !== undefined && sameProvider
+          ? hostSays
+          : viewSelection
+            ? isMiMoEntry(viewSelection.provider, viewSelection.model)
+            : currentModel
+              ? isMiMoEntry(currentModel.provider, currentModel.model)
+              : true; // 读不到 → 保守显示（与胶囊同策略）
+        if (!isMimo) {
+          return h(
+            "div",
+            {
+              style: {
+                padding: narrow ? "18px 14px" : "24px 22px",
+                fontSize: "13px",
+                lineHeight: 1.7,
+                color: "var(--dsw-alias-label-tertiary, #59636e)",
+              },
+            },
+            t("view.hiddenNotMimo"),
+          );
+        }
+      }
 
       if (loading && !summary) {
         return h(
@@ -1840,7 +1962,7 @@
                               "tbody",
                               null,
                               session.models.map((m, i) => {
-                                const mimo = isMiMoProviderName(m.provider);
+                                const mimo = isMiMoEntry(m.provider, m.model);
                                 const total = sessionSplit?.total || 1;
                                 const pct = Math.round(((Number(m.totalTokens) || 0) / total) * 100);
                                 return h(
@@ -2054,6 +2176,7 @@
       const [planTotal, setPlanTotal] = useState("");
       const [position, setPosition] = useState("header");
       const [wrapToolbar, setWrapToolbar] = useState(true);
+      const [hideViewWhenNotMiMo, setHideViewWhenNotMiMo] = useState(false);
       const [busy, setBusy] = useState(false);
       const [message, setMessage] = useState(null); // {kind:'ok'|'err', text}
 
@@ -2066,6 +2189,7 @@
             setPlanTotal(String(data.planTotalTokens ?? ""));
             setPosition(data.pillPosition ?? "header");
             setWrapToolbar(data.wrapToolbar !== false);
+            setHideViewWhenNotMiMo(data.hideViewWhenNotMiMo === true);
           })
           .catch((error) => {
             if (alive) setMessage({ kind: "err", text: error instanceof Error ? error.message : String(error) });
@@ -2083,6 +2207,7 @@
             planTotalTokens: Number(planTotal) || 0,
             pillPosition: position,
             wrapToolbar,
+            hideViewWhenNotMiMo,
           };
           // Cookie 留空 = 不改；勾选清除 = 写空串
           if (clearCookie) payload.cookie = "";
@@ -2095,7 +2220,7 @@
             setCfg(fresh);
             setPlanTotal(String(fresh.planTotalTokens ?? ""));
           }
-          setUiPrefs({ position, wrapToolbar });
+          setUiPrefs({ position, wrapToolbar, hideViewWhenNotMiMo });
           setMessage({ kind: "ok", text: t("cfg.saved") });
           if (typeof onChange === "function") onChange();
         } catch (error) {
@@ -2103,7 +2228,7 @@
         } finally {
           setBusy(false);
         }
-      }, [cookie, clearCookie, planTotal, position, wrapToolbar, onChange]);
+      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, onChange]);
 
       const labelStyle = {
         display: "block",
@@ -2299,6 +2424,32 @@
               style: { marginTop: "2px" },
             }),
             h("span", null, t("cfg.wrapToolbar")),
+          ),
+
+          // 非 MiMo 模型时隐藏详情页（可选，默认关闭）
+          h(
+            "label",
+            { style: { fontSize: "12px", display: "flex", gap: "6px", alignItems: "flex-start", cursor: "pointer", lineHeight: 1.5 } },
+            h("input", {
+              type: "checkbox",
+              checked: hideViewWhenNotMiMo,
+              disabled: busy,
+              onChange: (e) => {
+                setHideViewWhenNotMiMo(e.currentTarget.checked);
+                setMessage(null);
+              },
+              style: { marginTop: "2px" },
+            }),
+            h(
+              "span",
+              null,
+              t("cfg.hideViewWhenNotMiMo"),
+              h(
+                "span",
+                { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
+                t("cfg.hideViewWhenNotMiMoHint"),
+              ),
+            ),
           ),
 
           // 保存
@@ -2516,7 +2667,11 @@
       rpc("summary")
         .then((data) => {
           if (data?.ui) {
-            setUiPrefs({ position: data.ui.pillPosition ?? "header", wrapToolbar: data.ui.wrapToolbar !== false });
+            setUiPrefs({
+              position: data.ui.pillPosition ?? "header",
+              wrapToolbar: data.ui.wrapToolbar !== false,
+              hideViewWhenNotMiMo: data.ui.hideViewWhenNotMiMo === true,
+            });
           }
         })
         .catch(() => {

@@ -235,14 +235,57 @@ for (const scene of SCENARIOS) {
   ok(/useProjection\("modelSelection"\)/.test(src), "读 modelSelection 投影判断当前 provider");
   ok(/projection\?\.next \?\? projection\?\.lastUsed/.test(src), "取 next 优先、lastUsed 兜底");
   ok(/if \(!providerIsMiMo\) return null;/.test(src), "非 MiMo provider 时不渲染（返回 null）");
+  // 可见性门现在**优先用 host 的地址级结论**（summary.isMiMo），名字只作兜底。
+  // 旧断言（只看 /mimo/i + selectedProvider）已被取代。
   ok(
-    /selectedProvider === undefined \? true :/.test(src),
-    "读不到 provider 时保守显示（不因读取失败而静默关掉功能）",
+    /typeof summary\?\.isMiMo === "boolean"/.test(src),
+    "可见性门优先采信 host 的地址级结论 summary.isMiMo",
   );
   ok(
-    /\/mimo\/i\.test\(selectedProvider\)/.test(src),
-    "provider 用 /mimo/i 宽松匹配（覆盖 mimo / mimo-token-plan 等）",
+    /hostProvider === selectedProvider/.test(src),
+    "host 结论只在它对应的 provider 上采信（切模型后不误用旧结论）",
   );
+  ok(
+    /return isMiMoEntry\(selectedProvider, selectedModel\)/.test(src),
+    "兜底用 isMiMoEntry（provider 名或 model 名命中）",
+  );
+  ok(
+    /\^xiaomi\(-\|\$\)\/i\.test\(p\)/.test(src),
+    "isMiMoProviderName 覆盖 xiaomi / xiaomi-token-plan-*（不含 mimo 的内置 provider）",
+  );
+  ok(
+    /const isMiMoEntry = \(provider, model\)/.test(src),
+    "有 isMiMoEntry：会话明细只有 provider+model，需额外认模型名",
+  );
+
+  // isMiMoProviderName / isMiMoEntry 的实际行为（user 场景：内置 xiaomi* provider）
+  {
+    const st = src.indexOf("const isMiMoProviderName =");
+    // 切到 splitSessionByProvider 的**函数声明**处（它的 JSDoc 注释块含未闭合的
+    // `/**`，切到注释起点会把后续代码一起吞掉 → 提取出的片段语法错误）
+    const en = src.indexOf("function splitSessionByProvider", st);
+    const seg = src.slice(st, en);
+    const { isMiMoProviderName, isMiMoEntry } = new Function(
+      `${seg}\nreturn { isMiMoProviderName, isMiMoEntry };`,
+    )();
+    ok(isMiMoProviderName("mimo") === true, "名字规则：mimo → true");
+    ok(isMiMoProviderName("xiaomi-token-plan-cn") === true, "★ 名字规则：xiaomi-token-plan-cn → true");
+    ok(isMiMoProviderName("xiaomi") === true, "名字规则：xiaomi → true");
+    ok(isMiMoProviderName("codebuddy") === false, "名字规则：codebuddy → false");
+    ok(isMiMoProviderName("xiaomimimo") === true, "名字规则：xiaomimimo → true");
+    // 会话明细只有 provider+model，模型名要能兜住
+    ok(isMiMoEntry("some-proxy", "mimo-v2.5") === true, "★ entry：provider 无名但 model=mimo-v2.5 → true");
+    ok(isMiMoEntry("xiaomi-token-plan-cn", "mimo-v2.5") === true, "entry：内置套餐 → true");
+    ok(isMiMoEntry("codebuddy", "deepseek-v4.1-flash") === false, "entry：codebuddy/deepseek → false");
+  }
+
+  // 详情页「非 MiMo 时隐藏」开关
+  ok(/hideViewWhenNotMiMo/.test(src), "详情页读取 hideViewWhenNotMiMo 偏好");
+  ok(/const hideByPref = prefs\.hideViewWhenNotMiMo === true;/.test(src),
+    "仅在偏好为 true 时才启用隐藏");
+  ok(/t\("view\.hiddenNotMimo"\)/.test(src), "隐藏时有说明文案（不是空白页）");
+  ok(/t\("cfg\.hideViewWhenNotMiMo"\)/.test(src), "设置表单有该开关");
+  ok(/hideViewWhenNotMiMo,/.test(src), "保存时提交该字段");
 
   // ---------- Cookie 输入框必须可粘贴 ----------
   // 用户反馈过：Cookie 是几百字符的长串，输入框不支持弹出粘贴。
@@ -357,7 +400,13 @@ for (const scene of SCENARIOS) {
       }
     }
   }
-  const fn = new Function(`${src5.slice(st, en)}\nreturn billingTypeForSelection;`)();
+  // billingTypeForSelection 依赖 isMiMoProviderName（名字线索），提取时一并带上
+  const depSt = src5.indexOf("const isMiMoProviderName =");
+  const depEnd = src5.indexOf("\n", src5.indexOf("^xiaomi(-|$)", depSt) >= 0
+    ? src5.indexOf("^xiaomi(-|$)", depSt)
+    : depSt);
+  const dep = depSt >= 0 && depEnd > depSt ? src5.slice(depSt, depEnd) : "";
+  const fn = new Function(`${dep}\n${src5.slice(st, en)}\nreturn billingTypeForSelection;`)();
   const B = (provider, billingType, planStatus) => ({ provider, billingType, planStatus });
   const sel = undefined;
 

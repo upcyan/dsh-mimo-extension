@@ -100,6 +100,8 @@ function mimoSettingsSchema(input) {
       planTotalTokens: num(mimo.planTotalTokens, 500_000_000),
       pillPosition: positions.includes(mimo.pillPosition) ? mimo.pillPosition : "header",
       wrapToolbar: bool(mimo.wrapToolbar, true),
+      // 非 MiMo 模型时是否隐藏整个「MiMo 用量」详情页（默认 false = 一直显示）
+      hideViewWhenNotMiMo: bool(mimo.hideViewWhenNotMiMo, false),
       billingTypeOverrides:
         mimo.billingTypeOverrides && typeof mimo.billingTypeOverrides === "object" ? mimo.billingTypeOverrides : {},
       pricing: {
@@ -191,6 +193,7 @@ export function buildMimoSettingsSchema(ctx) {
       planTotalTokens: factory.number().default(500_000_000),
       pillPosition: factory.string().default("header"),
       wrapToolbar: factory.boolean().default(true),
+      hideViewWhenNotMiMo: factory.boolean().default(false),
       // 动态键（provider 或 provider/model），结构由 mimoSettingsSchema 兜底。
       // 注意 schemastery 的 dict 签名是 dict(值, 键) —— 第一个参数是 inner(值)。
       billingTypeOverrides: factory.dict(factory.any(), factory.string()).default({}),
@@ -979,8 +982,132 @@ export function createModelTracker(ctx, getCounter, getLocalCounter, getDefaultM
   return { note, current };
 }
 
-/** provider 是不是小米 MiMo 开放平台通道（如 `mimo`、`xiaomimimo`）。 */
-const isMiMoProvider = (provider) => typeof provider === "string" && provider.length > 0 && /mimo/i.test(provider);
+/**
+ * provider 是不是**小米 MiMo 通道**。
+ *
+ * ⚠ 必须同时覆盖两类命名，只匹配 `mimo` 会漏掉平台内置的那批：
+ *
+ *   | 来源 | provider id | 含 `mimo`? |
+ *   |---|---|---|
+ *   | 自建（本工作区 settings.yaml） | `mimo` | ✅ |
+ *   | **平台内置 pi-ai catalog** | **`xiaomi`**（按量） | ❌ |
+ *   | **平台内置 pi-ai catalog** | **`xiaomi-token-plan-cn` / `-sgp` / `-ams`** | ❌ |
+ *
+ * 实测：用户选 `xiaomi-token-plan-cn/mimo-v2.5` 时，旧规则（只有 `/mimo/i`）
+ * 把整个 MiMo 功能判成"非 MiMo" → 额度环不显示、详情页也不认。
+ * 内置 provider 供的模型 id 是 `mimo-v2.5` / `mimo-v2.5-pro`
+ * （见 `@earendil-works/pi-ai/dist/providers/data/xiaomi*.json`）。
+ *
+ * ⚠ 这里只回答"**名字像不像**小米通道" —— 它是**线索不是证据**。
+ * 权威判据是 `resolveMiMoChannel()`（看解析后的 API 地址是不是小米域名）。
+ * 计费类型另由 `billingTypeFor` 按地址/名称/套餐状态分别判
+ * （`xiaomi` 这个内置 catalog 指向按量地址，与 `xiaomi-token-plan-*` 是两条通道）。
+ *
+ * @param {string} provider
+ * @returns {boolean}
+ */
+const isMiMoProvider = (provider) =>
+  typeof provider === "string" &&
+  provider.length > 0 &&
+  (/mimo/i.test(provider) || /^xiaomi(-|$)/i.test(provider));
+
+/**
+ * 模型 id 是不是 MiMo 模型（`mimo-v2.5`、`mimo-v2.5-pro`、`mimo-v2.6-flash`…）。
+ *
+ * ⚠ 需要它是因为**通道名与模型名可以不同源**：平台内置 provider 叫
+ * `xiaomi-token-plan-cn`（不含 mimo），但它供的是 `mimo-v2.5`。
+ *
+ * @param {string} model
+ * @returns {boolean}
+ */
+const isMiMoModel = (model) => typeof model === "string" && /mimo/i.test(model);
+
+/**
+ * 小米官方域名 —— **这才是"属于 MiMo"的铁证**。
+ *
+ * 只认官方域名，不看名字：自建网关可能叫 `mimo-anything` 却转发到别家；
+ * 反过来 `xiaomi` 这种内置 id 又完全不含 `mimo`。名字只能当线索。
+ */
+const MIMO_HOST_RE = /(^|\.)xiaomimimo\.com$/i;
+
+/**
+ * 从 API 地址判断"是不是小米通道"（比名字可靠）。
+ *
+ * @param {string} baseURL - 解析后的 API 地址
+ * @returns {boolean|null} true=是小米；false=明确不是；null=地址未知，无法据此判断
+ */
+export function isMiMoBaseURL(baseURL) {
+  const raw = typeof baseURL === "string" ? baseURL.trim() : "";
+  if (!raw) return null;
+  let host = "";
+  try {
+    host = new URL(raw).hostname;
+  } catch {
+    // 不是合法 URL：退化为按字符串找域名（自建网关可能只写了个前缀）
+    const m = /([a-z0-9.-]*xiaomimimo\.com)/i.exec(raw);
+    if (!m) return null;
+    host = m[1];
+  }
+  return MIMO_HOST_RE.test(host);
+}
+
+/**
+ * 平台**内置 pi-ai catalog** 里各 provider 的 API 地址。
+ *
+ * 为什么要把这张表内联：内置 provider（`xiaomi*`）的地址**不在 settings.yaml**，
+ * 而是 pi-ai 包 `dist/providers/*.js` 里的 `baseUrl`，插件无法 `require`
+ * `@earendil-works/pi-ai`（不在 profile 依赖树里）。所以把实测值抄进来。
+ *
+ * ⚠ 与上游同步：值取自
+ * `runtime/node_modules/@earendil-works/pi-ai/dist/providers/xiaomi*.js`。
+ * 升级 dsh 后如发现地址变了，用下面这条命令核对：
+ *   grep -oE 'baseUrl: *"[^"]*"' <runtime>/node_modules/@earendil-works/pi-ai/dist/providers/xiaomi*.js
+ *
+ * @type {Record<string, string>}
+ */
+export const BUILTIN_PROVIDER_BASE_URLS = {
+  xiaomi: "https://api.xiaomimimo.com/v1",
+  "xiaomi-token-plan-cn": "https://token-plan-cn.xiaomimimo.com/v1",
+  "xiaomi-token-plan-sgp": "https://token-plan-sgp.xiaomimimo.com/v1",
+  "xiaomi-token-plan-ams": "https://token-plan-ams.xiaomimimo.com/v1",
+};
+
+/**
+ * 综合判定「当前选中模型是否属于 MiMo 通道」，**以 API 地址为准**。
+ *
+ * 判定顺序（名字只是线索，地址才是证据）：
+ *   1. 地址明确是小米域名 → **是**（无论 provider 叫什么）
+ *   2. 地址明确不是小米域名 → **不是**（哪怕 provider 叫 `mimo-xxx`）
+ *   3. 地址未知（自建网关未写 baseURL 等）→ 退回名字线索：
+ *      provider 命中 `isMiMoProvider` **或** model 命中 `isMiMoModel` 才算，
+ *      并在返回值里标 `certain:false`，UI 可据此保守处理。
+ *
+ * @param {object} input
+ * @param {string} [input.provider]
+ * @param {string} [input.model]
+ * @param {string} [input.baseURL] - 解析后的 API 地址（可为空）
+ * @returns {{isMiMo: boolean, certain: boolean, reason: string}}
+ *   `certain` 为 false 表示"地址没读到、只能按名字猜"
+ */
+export function resolveMiMoChannel({ provider, model, baseURL } = {}) {
+  const byUrl = isMiMoBaseURL(baseURL);
+  if (byUrl === true) return { isMiMo: true, certain: true, reason: "baseURL" };
+  if (byUrl === false) return { isMiMo: false, certain: true, reason: "baseURL" };
+  // 地址未知 → 名字线索（不确信）
+  if (isMiMoProvider(provider)) return { isMiMo: true, certain: false, reason: "provider-name" };
+  if (isMiMoModel(model)) return { isMiMo: true, certain: false, reason: "model-name" };
+  return { isMiMo: false, certain: false, reason: "unknown" };
+}
+
+/**
+ * 内置 provider 的地址（settings.yaml 没写 baseURL 时用它兜底）。
+ *
+ * @param {string} provider
+ * @returns {string}
+ */
+export function builtinBaseURL(provider) {
+  return typeof provider === "string" ? BUILTIN_PROVIDER_BASE_URLS[provider] ?? "" : "";
+}
 
 /**
  * **按 API 地址**判定计费类型 —— 最直接、最可靠的信号。
@@ -1040,11 +1167,17 @@ export function billingTypeFor(mimo, provider, model, planStatus = "unknown", ba
   const byUrl = billingTypeFromBaseURL(baseURL);
   if (byUrl) return byUrl;
 
-  // 3) provider 名
+  // 3) provider 名含 token-plan
   if (/token-plan/i.test(provider)) return "token-plan";
 
-  // 4) 小米通道 + 地址未知 → 用官方套餐状态兜底
-  if (isMiMoProvider(provider)) {
+  // 4) 小米通道 + 地址未知 → 用官方套餐状态兜底。
+  //
+  // ⚠ 必须**先确认地址不是"明确非小米"**：`billingTypeFromBaseURL` 只认官方
+  // 域名，返回 null 有两种含义 —— "没读到地址" 与 "读到了但不是小米域名"。
+  // 后者（如自建网关 `mimo-gateway` → api.openai.com）**不能**再按名字判套餐，
+  // 否则一个名字带 mimo 却转发到别家的路由会被误标成 Token Plan。
+  const urlKnownNonMiMo = isMiMoBaseURL(baseURL) === false;
+  if (!urlKnownNonMiMo && isMiMoProvider(provider)) {
     if (planStatus === "expired" || planStatus === "none") return "payg";
     return "token-plan";
   }
@@ -1078,6 +1211,10 @@ async function buildSummary(deps, signal, options = {}) {
     local: null,
     billingType: "token-plan",
     providerBaseURL: "",
+    // 「是否 MiMo 通道」（以地址为准，见 resolveMiMoChannel）
+    isMiMo: false,
+    isMiMoCertain: false,
+    isMiMoReason: "unknown",
     model: "",
     provider: "",
     sessionTokens: 0,
@@ -1171,6 +1308,17 @@ async function buildSummary(deps, signal, options = {}) {
   // 4) 计费类型与单价
   // 首要信号是 provider 的 API 地址（小米按量/套餐两条通道 baseURL 不同）
   result.providerBaseURL = deps.providerBaseURL?.(result.provider) ?? "";
+  // 「是否 MiMo 通道」的权威结论：**以地址为准**，名字只作地址缺失时的线索。
+  // 供胶囊可见性与详情页开关使用（旧版只按 provider 名匹配 `/mimo/i`，
+  // 漏掉了平台内置的 `xiaomi-token-plan-cn`）。
+  const channel = resolveMiMoChannel({
+    provider: result.provider,
+    model: result.model,
+    baseURL: result.providerBaseURL,
+  });
+  result.isMiMo = channel.isMiMo;
+  result.isMiMoCertain = channel.certain;
+  result.isMiMoReason = channel.reason;
   result.billingType = billingTypeFor(
     mimo,
     result.provider,
@@ -1195,6 +1343,7 @@ async function buildSummary(deps, signal, options = {}) {
   result.ui = {
     pillPosition: mimo.pillPosition ?? "header",
     wrapToolbar: mimo.wrapToolbar !== false,
+    hideViewWhenNotMiMo: mimo.hideViewWhenNotMiMo === true,
   };
 
   // 浏览器半边的自诊断回传（脚本加载 → 工厂 → apply），诊断"装了没生效"
@@ -1320,19 +1469,28 @@ export function apply(ctx, config) {
   // 没有它，`/dsh-mimo-usage/session` 会恒返回 null → 会话用量恒为 0。
   deps.localCounter = createLocalUsageCounter(ctx);
 
-  // provider 的 API 地址 —— 从 `llm-pi-ai` 命名空间的 providers.<id>.baseURL 读。
-  // 小米按量与套餐两条通道的 baseURL 不同（api.xiaomimimo.com vs token-plan-cn.…），
-  // 所以地址本身就是计费类型最直接的判定依据，不必依赖官方套餐状态。
+  // provider 的 API 地址 —— **两级来源**：
+  //   ① `llm-pi-ai` 命名空间的 providers.<id>.baseURL（自建 provider 写在这里）
+  //   ② `BUILTIN_PROVIDER_BASE_URLS`（平台内置 pi-ai catalog 的地址，
+  //      settings.yaml 里**没有** baseURL 字段，插件也无法 require pi-ai 包）
+  //
+  // 为什么非要拿到地址：小米按量（api.xiaomimimo.com）与套餐
+  // （token-plan-<region>.xiaomimimo.com）是**两条通道**，地址是判计费类型与
+  // "是不是 MiMo"最可靠的证据 —— 名字会骗人（`xiaomi` 不含 mimo、
+  // 自建网关可能叫 `mimo-xxx` 却指向别家）。
   let settingsService = null;
   deps.providerBaseURL = (provider) => {
-    if (!provider || !settingsService || typeof settingsService.get !== "function") return "";
-    try {
-      const doc = settingsService.get("llm-pi-ai");
-      const url = doc?.providers?.[provider]?.baseURL;
-      return typeof url === "string" ? url : "";
-    } catch {
-      return "";
+    if (!provider) return "";
+    if (settingsService && typeof settingsService.get === "function") {
+      try {
+        const doc = settingsService.get("llm-pi-ai");
+        const url = doc?.providers?.[provider]?.baseURL;
+        if (typeof url === "string" && url) return url;
+      } catch {
+        /* 读不到就落到内置表 */
+      }
     }
+    return builtinBaseURL(provider);
   };
 
   /**
@@ -1564,6 +1722,7 @@ export function apply(ctx, config) {
                       planTotalTokens: m.planTotalTokens ?? 0,
                       pillPosition: m.pillPosition ?? "header",
                       wrapToolbar: m.wrapToolbar !== false,
+                      hideViewWhenNotMiMo: m.hideViewWhenNotMiMo === true,
                       billingTypeOverrides: m.billingTypeOverrides ?? {},
                       pricing: m.pricing ?? {},
                       writable: Boolean(userSettings),
@@ -1588,6 +1747,7 @@ export function apply(ctx, config) {
                     patch.pillPosition = body.pillPosition;
                   }
                   if (typeof body.wrapToolbar === "boolean") patch.wrapToolbar = body.wrapToolbar;
+                  if (typeof body.hideViewWhenNotMiMo === "boolean") patch.hideViewWhenNotMiMo = body.hideViewWhenNotMiMo;
                   await userSettings.update({ mimo: patch });
                   deps.clearOfficialCache?.();   // 设置已保存：官方数据作废
                   writeJson(res, 200, { ok: true, data: { saved: Object.keys(patch) } });

@@ -775,6 +775,74 @@ if (loaded) {
   ok(url("https://token-plan-sgp.xiaomimimo.com/v1") === "token-plan", "token-plan-sgp → Token Plan");
   ok(url("https://token-plan-ams.xiaomimimo.com/v1") === "token-plan", "token-plan-ams → Token Plan");
   ok(url("https://api.xiaomimimo.com/v1") === "payg", "api.xiaomimimo.com → 按量计费");
+
+  // ---------- 平台内置 provider 识别（09-27 修）----------
+  // 用户反馈：用 `xiaomi-token-plan-cn/mimo-v2.5` 时没被识别成 MiMo。
+  // 根因：旧规则只匹配 `/mimo/i`，而平台内置 provider 名**不含 mimo**。
+  {
+    const chan = host.resolveMiMoChannel;
+    const url = host.isMiMoBaseURL;
+    const B = host.builtinBaseURL;
+
+    // 内置地址表必须与 pi-ai catalog 一致
+    ok(B("xiaomi-token-plan-cn") === "https://token-plan-cn.xiaomimimo.com/v1",
+      "内置表：xiaomi-token-plan-cn 地址正确");
+    ok(B("xiaomi-token-plan-sgp") === "https://token-plan-sgp.xiaomimimo.com/v1",
+      "内置表：xiaomi-token-plan-sgp 地址正确");
+    ok(B("xiaomi-token-plan-ams") === "https://token-plan-ams.xiaomimimo.com/v1",
+      "内置表：xiaomi-token-plan-ams 地址正确");
+    ok(B("xiaomi") === "https://api.xiaomimimo.com/v1", "内置表：xiaomi（按量）地址正确");
+    ok(B("不存在的") === "", "内置表：未知 provider → 空串");
+
+    // 地址判定（铁证）
+    ok(url("https://token-plan-cn.xiaomimimo.com/v1") === true, "isMiMoBaseURL：套餐网关 → true");
+    ok(url("https://api.xiaomimimo.com/v1") === true, "isMiMoBaseURL：按量网关 → true");
+    ok(url("https://api.openai.com/v1") === false, "isMiMoBaseURL：别家 → false（不是 null）");
+    ok(url("") === null, "isMiMoBaseURL：空地址 → null（未知，不能当 false）");
+    ok(url("不是URL") === null, "isMiMoBaseURL：非法 URL 且无域名 → null");
+
+    // ★ 用户场景：内置套餐 provider，名字不含 mimo，但地址证明是小米
+    {
+      const r = chan({ provider: "xiaomi-token-plan-cn", model: "mimo-v2.5", baseURL: B("xiaomi-token-plan-cn") });
+      ok(r.isMiMo === true && r.certain === true && r.reason === "baseURL",
+        "★ xiaomi-token-plan-cn/mimo-v2.5 → 识别为 MiMo（按地址，确信）");
+    }
+    // 名字不含 mimo 且地址也没读到 → 靠 provider 名（xiaomi）兜底
+    {
+      const r = chan({ provider: "xiaomi-token-plan-sgp", model: "" });
+      ok(r.isMiMo === true && r.certain === false && r.reason === "provider-name",
+        "地址缺失时按 provider 名（xiaomi*）兜底，标 certain=false");
+    }
+    // 地址未知、只有模型名像
+    {
+      const r = chan({ provider: "some-proxy", model: "mimo-v2.5" });
+      ok(r.isMiMo === true && r.certain === false && r.reason === "model-name",
+        "地址缺失时按 model 名（mimo*）兜底");
+    }
+    // 地址明确不是小米 → 否决名字（防"名含 mimo 却指向别家"）
+    {
+      const r = chan({ provider: "mimo-gateway", model: "mimo-v2.5", baseURL: "https://api.openai.com/v1" });
+      ok(r.isMiMo === false && r.certain === true,
+        "★ 地址不是小米域名时否决名字（mimo-gateway→openai 判非 MiMo）");
+    }
+    // 完全无关
+    {
+      const r = chan({ provider: "codebuddy", model: "deepseek-v4.1-flash" });
+      ok(r.isMiMo === false, "codebuddy/deepseek → 非 MiMo");
+    }
+
+    // 计费类型（沿用地址否决）
+    ok(bt({}, "xiaomi-token-plan-cn", "mimo-v2.5", "active", B("xiaomi-token-plan-cn")) === "token-plan",
+      "★ xiaomi-token-plan-cn → token-plan");
+    ok(bt({}, "xiaomi-token-plan-sgp", "mimo-v2.5", "active", B("xiaomi-token-plan-sgp")) === "token-plan",
+      "xiaomi-token-plan-sgp → token-plan");
+    ok(bt({}, "xiaomi", "mimo-v2.5", "active", B("xiaomi")) === "payg",
+      "★ 内置 xiaomi（按量地址）→ payg（同是小米，但通道不同）");
+    ok(bt({}, "mimo-gateway", "mimo-v2.5", "active", "https://api.openai.com/v1") === "payg",
+      "★ 名含 mimo 但地址是别家 → payg（地址否决名字）");
+    ok(bt({}, "mimo", "mimo-v2.6-flash", "active", "") === "token-plan",
+      "自建 mimo、地址未知 → 仍按套餐（兼容旧行为）");
+  }
   ok(url("") === null && url("   ") === null && url(undefined) === null, "空/非字符串地址 → null（回退其它规则）");
   ok(url("https://gateway.example.com/v1") === null, "自建网关 → null（不臆断）");
 
