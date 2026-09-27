@@ -451,6 +451,25 @@ dsh --profile web --dump-config | grep -A3 "mimo-usage"   # 应打印 id: mimo-u
 > `settings.write()` 只校验命名空间已注册、不校验调用者归属，所以可行；
 > 但若设置在只读 provider 上，会失败并如实报错。
 
+#### 子选项：同时为纯文本模型提供视觉能力
+
+主开关下方还有一个 **「同时为纯文本模型提供视觉能力」** 子选项
+（**默认关闭**，且**主开关关闭时禁用**）。
+
+它额外给平台标为纯文本的小米模型声明图像输入：
+
+| provider | 模型 | catalog input |
+| --- | --- | --- |
+| `xiaomi` | `mimo-v2.5-pro`、`mimo-v2.5-pro-ultraspeed` | `["text"]` |
+| `xiaomi-token-plan-{cn,sgp,ams}` | `mimo-v2.5-pro` | `["text"]` |
+
+> ⚠ **这是越权声明**：上游可能拒绝，或**静默丢弃图片**（你未必收到报错 ——
+> 比明确报错更糟）。仅在确认这些模型实际能读图时开启。
+
+**回收是精确的**：两张模型清单（多模态 / 纯文本）各自决定自己去留。
+关闭子选项时**只回收它加过的**，不会删掉 catalog 本就给 `mimo-v2.5`
+声明的 `image`（那是主开关管的）。自检里有一条专门的断言盯着这个边界。
+
 ## 结构
 
 - `host.js` — 宿主插件：注册 `/api/dsh-mimo-usage/*` 路由（balance / tokenPlan / usage / summary），Cookie 调官方接口，失败回退本地 usage 日志聚合；顺带注册 `/mimo` 斜杠命令与 `mimo_usage` 工具供模型查询。
