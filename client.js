@@ -312,8 +312,6 @@
       "cfg.pos.hidden": "不显示胶囊",
       "cfg.hideViewWhenNotMiMo": "非 MiMo 模型时隐藏「MiMo 用量」详情页",
       "cfg.hideViewWhenNotMiMoHint": "默认关闭：无论当前模型是什么都显示该页。开启后，用别的模型时这一页只提示、不显示用量数据。",
-      "cfg.hideViewWhenNotMiMo": "Hide the MiMo usage tab when the model is not MiMo",
-      "cfg.hideViewWhenNotMiMoHint": "Off by default: the tab is always available. When on, using another model leaves the tab showing a notice instead of usage data.",
       "cfg.wrapToolbar": "允许输入框工具栏自动换行（防止工具图标挤占重叠）",
       "cfg.save": "保存",
       "cfg.saving": "保存中…",

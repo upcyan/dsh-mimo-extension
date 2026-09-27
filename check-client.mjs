@@ -455,6 +455,21 @@ for (const scene of SCENARIOS) {
   const zhKeys = keysOf(zhBlock);
   const enKeys = keysOf(enBlock);
 
+  // ⚠ 块内**重复 key** 必须单独查 —— 上面用 Set 会天然去重，看不见重复。
+  // 实测踩过：英文行被插进 zh 块，JS 对象字面量"后者覆盖前者"，
+  // 于是中文界面显示了英文，而所有 key 集合比对全部通过。
+  const dupOf = (block) => {
+    const seen = new Map();
+    for (const m of block.matchAll(/"([a-zA-Z0-9_.]+)":/g)) {
+      seen.set(m[1], (seen.get(m[1]) ?? 0) + 1);
+    }
+    return [...seen.entries()].filter(([, n]) => n > 1).map(([k, n]) => `${k}×${n}`);
+  };
+  const zhDup = dupOf(zhBlock);
+  const enDup = dupOf(enBlock);
+  ok(zhDup.length === 0, `zh 块内无重复 key${zhDup.length ? `（${zhDup.join(",")}）` : ""}`);
+  ok(enDup.length === 0, `en 块内无重复 key${enDup.length ? `（${enDup.join(",")}）` : ""}`);
+
   const missingZh = [...used].filter((k) => !zhKeys.has(k));
   const missingEn = [...used].filter((k) => !enKeys.has(k));
   ok(missingZh.length === 0, `t() 用到的 key 都有中文文案${missingZh.length ? `（缺 ${missingZh.join(",")}）` : ""}`);
