@@ -287,6 +287,24 @@ for (const scene of SCENARIOS) {
   ok(/t\("cfg\.hideViewWhenNotMiMo"\)/.test(src), "设置表单有该开关");
   ok(/hideViewWhenNotMiMo,/.test(src), "保存时提交该字段");
 
+  // 视觉路由开关
+  ok(/const \[visionRouting, setVisionRouting\] = useState\(false\)/.test(src), "有 visionRouting 状态");
+  ok(/setVisionRouting\(data\.visionRouting === true\)/.test(src), "载入时读取 visionRouting");
+  ok(/\n\s+visionRouting,\n\s+\};/.test(src), "保存时提交该字段");
+  ok(/t\("cfg\.visionRouting"\)/.test(src), "设置表单有该开关");
+  ok(/t\("cfg\.visionRoutingHint"\)/.test(src), "开关带说明文案");
+  // 跨命名空间写入可能失败，必须回显结果
+  ok(/saved\?\.visionError/.test(src), "★ 读取 POST 返回的 visionError（失败要说出来）");
+  ok(/t\("cfg\.visionFailed", \{ error: vErr \}\)/.test(src), "失败时给出原因文案");
+  ok(/t\("cfg\.visionOn", \{ list: vChanged\.join\(", "\) \}\)/.test(src), "成功时列出被改的模型");
+  ok(/setUiPrefs\(\{ position, wrapToolbar, hideViewWhenNotMiMo, visionRouting \}\)/.test(src),
+    "保存后同步到共享 uiPrefs");
+  // i18n 成对
+  for (const k of ["cfg.visionRouting","cfg.visionRoutingHint","cfg.visionOn","cfg.visionOff","cfg.visionFailed"]) {
+    const zh = /const zh = \{/.test(src);
+    ok(src.includes(`"${k}":`), `有文案 ${k}`);
+  }
+
   // ---------- tab 隐藏必须靠注销注册（09-27 修）----------
   // 用户反馈："开了隐藏，但 tab 还在"。
   // 根因：tab 行文字取自**注册元数据的 label**，平台这样建列表

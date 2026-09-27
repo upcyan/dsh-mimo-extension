@@ -313,6 +313,11 @@
       "cfg.hideViewWhenNotMiMo": "非 MiMo 模型时隐藏「MiMo 用量」详情页",
       "cfg.hideViewWhenNotMiMoHint": "默认关闭：无论当前模型是什么都显示该页。开启后，用别的模型时这一页只提示、不显示用量数据。",
       "cfg.wrapToolbar": "允许输入框工具栏自动换行（防止工具图标挤占重叠）",
+      "cfg.visionRouting": "启用 MiMo 视觉路由（图像输入）",
+      "cfg.visionRoutingHint": "只对平台目录里声明支持图像的小米模型生效（如 mimo-v2.5）。开启后图片可以发给这些模型；纯文本模型（如 mimo-v2.5-pro）不会被改动。",
+      "cfg.visionOn": "已开启视觉路由：{list}",
+      "cfg.visionOff": "已关闭视觉路由：{list}",
+      "cfg.visionFailed": "视觉路由设置失败：{error}",
       "cfg.save": "保存",
       "cfg.saving": "保存中…",
       "cfg.saved": "已保存",
@@ -423,6 +428,11 @@
       "cfg.hideViewWhenNotMiMo": "Hide the MiMo usage tab when the model is not MiMo",
       "cfg.hideViewWhenNotMiMoHint": "Off by default: the tab is always available. When on, using another model leaves the tab showing a notice instead of usage data.",
       "cfg.wrapToolbar": "Let the composer toolbar wrap (prevents tool icons from overlapping)",
+      "cfg.visionRouting": "Enable MiMo vision routing (image input)",
+      "cfg.visionRoutingHint": "Applies only to the Xiaomi models the platform catalog declares as accepting images, such as mimo-v2.5. Text-only models like mimo-v2.5-pro are left untouched.",
+      "cfg.visionOn": "Vision routing enabled: {list}",
+      "cfg.visionOff": "Vision routing disabled: {list}",
+      "cfg.visionFailed": "Vision routing failed: {error}",
       "cfg.save": "Save",
       "cfg.saving": "Saving…",
       "cfg.saved": "Saved",
@@ -2175,6 +2185,8 @@
       const [position, setPosition] = useState("header");
       const [wrapToolbar, setWrapToolbar] = useState(true);
       const [hideViewWhenNotMiMo, setHideViewWhenNotMiMo] = useState(false);
+      const [visionRouting, setVisionRouting] = useState(false);
+      const [visionMsg, setVisionMsg] = useState(null);
       const [busy, setBusy] = useState(false);
       const [message, setMessage] = useState(null); // {kind:'ok'|'err', text}
 
@@ -2188,6 +2200,7 @@
             setPosition(data.pillPosition ?? "header");
             setWrapToolbar(data.wrapToolbar !== false);
             setHideViewWhenNotMiMo(data.hideViewWhenNotMiMo === true);
+            setVisionRouting(data.visionRouting === true);
           })
           .catch((error) => {
             if (alive) setMessage({ kind: "err", text: error instanceof Error ? error.message : String(error) });
@@ -2206,11 +2219,12 @@
             pillPosition: position,
             wrapToolbar,
             hideViewWhenNotMiMo,
+            visionRouting,
           };
           // Cookie 留空 = 不改；勾选清除 = 写空串
           if (clearCookie) payload.cookie = "";
           else if (cookie.trim()) payload.cookie = cookie.trim();
-          await rpc("settings", undefined, "POST", payload);
+          const saved = await rpc("settings", undefined, "POST", payload);
           setCookie("");
           setClearCookie(false);
           const fresh = await rpc("settings").catch(() => null);
@@ -2218,15 +2232,32 @@
             setCfg(fresh);
             setPlanTotal(String(fresh.planTotalTokens ?? ""));
           }
-          setUiPrefs({ position, wrapToolbar, hideViewWhenNotMiMo });
-          setMessage({ kind: "ok", text: t("cfg.saved") });
+          setUiPrefs({ position, wrapToolbar, hideViewWhenNotMiMo, visionRouting });
+          // 视觉路由是**跨命名空间写入**（改 llm-pi-ai 的模型声明），可能失败
+          // （设置服务只读 / 命名空间未注册）。失败必须说出来，不能只报"已保存"，
+          // 否则用户以为开了视觉却一直发不出图。
+          const vErr = saved?.visionError;
+          const vChanged = Array.isArray(saved?.visionChanged) ? saved.visionChanged : [];
+          if (vErr) {
+            setVisionMsg({ kind: "err", text: t("cfg.visionFailed", { error: vErr }) });
+            setMessage({ kind: "err", text: t("cfg.visionFailed", { error: vErr }) });
+          } else if (visionRouting && vChanged.length) {
+            setVisionMsg({ kind: "ok", text: t("cfg.visionOn", { list: vChanged.join(", ") }) });
+            setMessage({ kind: "ok", text: t("cfg.saved") });
+          } else if (!visionRouting && vChanged.length) {
+            setVisionMsg({ kind: "ok", text: t("cfg.visionOff", { list: vChanged.join(", ") }) });
+            setMessage({ kind: "ok", text: t("cfg.saved") });
+          } else {
+            setVisionMsg(null);
+            setMessage({ kind: "ok", text: t("cfg.saved") });
+          }
           if (typeof onChange === "function") onChange();
         } catch (error) {
           setMessage({ kind: "err", text: t("cfg.saveFailed", { error: error instanceof Error ? error.message : String(error) }) });
         } finally {
           setBusy(false);
         }
-      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, onChange]);
+      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, onChange]);
 
       const labelStyle = {
         display: "block",
@@ -2449,6 +2480,50 @@
               ),
             ),
           ),
+
+          // 启用 MiMo 视觉路由（可选，默认关闭）
+          h(
+            "label",
+            { style: { fontSize: "12px", display: "flex", gap: "6px", alignItems: "flex-start", cursor: "pointer", lineHeight: 1.5 } },
+            h("input", {
+              type: "checkbox",
+              checked: visionRouting,
+              disabled: busy,
+              onChange: (e) => {
+                setVisionRouting(e.currentTarget.checked);
+                setMessage(null);
+                setVisionMsg(null);
+              },
+              style: { marginTop: "2px" },
+            }),
+            h(
+              "span",
+              null,
+              t("cfg.visionRouting"),
+              h(
+                "span",
+                { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
+                t("cfg.visionRoutingHint"),
+              ),
+            ),
+          ),
+          visionMsg
+            ? h(
+                "div",
+                {
+                  style: {
+                    fontSize: "11px",
+                    lineHeight: 1.6,
+                    marginLeft: "18px",
+                    color:
+                      visionMsg.kind === "err"
+                        ? "var(--dsw-alias-state-error-primary, #cf222e)"
+                        : "var(--dsw-alias-label-tertiary, #59636e)",
+                  },
+                },
+                visionMsg.text,
+              )
+            : null,
 
           // 保存
           h(

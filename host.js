@@ -102,6 +102,8 @@ function mimoSettingsSchema(input) {
       wrapToolbar: bool(mimo.wrapToolbar, true),
       // 非 MiMo 模型时是否隐藏整个「MiMo 用量」详情页（默认 false = 一直显示）
       hideViewWhenNotMiMo: bool(mimo.hideViewWhenNotMiMo, false),
+      // 启用 MiMo 视觉路由：向 llm-pi-ai 写入 models[].input 含 image
+      visionRouting: bool(mimo.visionRouting, false),
       billingTypeOverrides:
         mimo.billingTypeOverrides && typeof mimo.billingTypeOverrides === "object" ? mimo.billingTypeOverrides : {},
       pricing: {
@@ -194,6 +196,7 @@ export function buildMimoSettingsSchema(ctx) {
       pillPosition: factory.string().default("header"),
       wrapToolbar: factory.boolean().default(true),
       hideViewWhenNotMiMo: factory.boolean().default(false),
+      visionRouting: factory.boolean().default(false),
       // 动态键（provider 或 provider/model），结构由 mimoSettingsSchema 兜底。
       // 注意 schemastery 的 dict 签名是 dict(值, 键) —— 第一个参数是 inner(值)。
       billingTypeOverrides: factory.dict(factory.any(), factory.string()).default({}),
@@ -1073,6 +1076,52 @@ export const BUILTIN_PROVIDER_BASE_URLS = {
 };
 
 /**
+ * 平台 catalog 里**声明了图像输入**的小米模型（多模态）。
+ *
+ * 数据来源：`@earendil-works/pi-ai/dist/providers/data/xiaomi*.json` 的
+ * `input` 字段（实测抓取）：
+ *
+ *   | provider | 模型 | input |
+ *   |---|---|---|
+ *   | xiaomi / xiaomi-token-plan-{cn,sgp,ams} | **mimo-v2.5** | **["text","image"]** |
+ *   | 同上 | mimo-v2.5-pro | ["text"] |
+ *   | xiaomi | mimo-v2.5-pro-ultraspeed | ["text"] |
+ *
+ * ⚠ **只把多模态的列进来**。「视觉路由」开关据此**只对真正支持图像的模型**
+ * 写入 `input: ["text","image"]` —— 不给 `-pro` 之类的纯文本模型撑腰，
+ * 否则发图会被上游拒绝或静默丢弃（那是更糟的失败：用户以为发出去了）。
+ *
+ * ⚠ 与上游同步：升级 dsh 后核对
+ *   `python3 -c "import json;d=json.load(open('<pi-ai>/dist/providers/data/xiaomi.json'));..."`，
+ *   或直接看 `input` 字段。新增多模态模型时把它加进这里。
+ *
+ * 匹配方式：**按模型 id 前缀**（`mimo-v2.5` 精确匹配，避免误伤 `mimo-v2.5-pro`）。
+ */
+export const BUILTIN_MULTIMODAL_MODELS = [
+  { provider: "xiaomi", model: "mimo-v2.5" },
+  { provider: "xiaomi-token-plan-cn", model: "mimo-v2.5" },
+  { provider: "xiaomi-token-plan-sgp", model: "mimo-v2.5" },
+  { provider: "xiaomi-token-plan-ams", model: "mimo-v2.5" },
+];
+
+/**
+ * 该 provider/model 是否是**平台 catalog 声明的多模态小米模型**。
+ *
+ * ⚠ 精确匹配模型 id（不是前缀），所以 `mimo-v2.5-pro` **不会**命中
+ * `mimo-v2.5` —— 这是刻意的：`-pro` 在 catalog 里是纯文本。
+ * 自建 provider（如 `mimo`）不在内置表里，返回 false（它的模型清单是用户
+ * 自己声明的，能力也该由用户自己声明）。
+ *
+ * @param {string} provider
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function isBuiltinMultimodal(provider, model) {
+  if (typeof provider !== "string" || typeof model !== "string") return false;
+  return BUILTIN_MULTIMODAL_MODELS.some((e) => e.provider === provider && e.model === model);
+}
+
+/**
  * 综合判定「当前选中模型是否属于 MiMo 通道」，**以 API 地址为准**。
  *
  * 判定顺序（名字只是线索，地址才是证据）：
@@ -1344,6 +1393,7 @@ async function buildSummary(deps, signal, options = {}) {
     pillPosition: mimo.pillPosition ?? "header",
     wrapToolbar: mimo.wrapToolbar !== false,
     hideViewWhenNotMiMo: mimo.hideViewWhenNotMiMo === true,
+    visionRouting: mimo.visionRouting === true,
   };
 
   // 浏览器半边的自诊断回传（脚本加载 → 工厂 → apply），诊断"装了没生效"
@@ -1596,6 +1646,90 @@ export function apply(ctx, config) {
     officialAt = 0;
   };
 
+  // ── 视觉路由：把 `input: ["text","image"]` 写进 llm-pi-ai 的模型声明 ──────
+  //
+  // **为什么需要写**：平台按 `inputModalities` 硬拦截图片附件
+  // （`dsh-api-session-controller` 抛 `MODEL_DOES_NOT_SUPPORT_IMAGES`），
+  // 而该值最终来自 `llm-pi-ai` 里每个模型的 `input`。catalog 虽然给
+  // `mimo-v2.5` 标了 `["text","image"]`，但**用户/工具一旦在 settings.yaml
+  // 显式列出 models（本机就是这样），能力就可能被收窄成 `["text"]`**。
+  // 这个开关把多模态模型的 `input` 显式写全，等价于 openai-codex 的做法。
+  //
+  // **只写真正多模态的模型**（见 `BUILTIN_MULTIMODAL_MODELS`），
+  // 别的 MiMo 模型（`-pro` 等）一律不碰 —— 避免"声明了却不被上游接受"。
+  //
+  // 实现用 `mutate` 的**路径寻址**：只改目标模型那一个字段，
+  // 不重写整个 provider（那会覆盖用户的其它设置）。
+  /**
+   * 让 llm-pi-ai 里多模态 MiMo 模型的 input 与 `enable` 一致。
+   *
+   * @param {boolean} enable - true=声明图像输入；false=回收成 ["text"]
+   * @returns {Promise<{changed: string[], error: string}>}
+   */
+  deps.applyVisionRouting = async (enable) => {
+    const changed = [];
+    if (!settingsService || typeof settingsService.mutate !== "function") {
+      return { changed, error: "设置服务不可写（settings.mutate 不可用）" };
+    }
+    // 读出当前文档，只看内置表里的模型（精确匹配）
+    let doc;
+    try {
+      doc = settingsService.get("llm-pi-ai");
+    } catch {
+      return { changed, error: "读不到 llm-pi-ai 命名空间" };
+    }
+    const providers = doc?.providers ?? {};
+    const ops = [];
+    for (const { provider, model } of BUILTIN_MULTIMODAL_MODELS) {
+      const list = providers?.[provider]?.models;
+      if (!Array.isArray(list)) continue; // 该 provider 没配 → 不动
+      const idx = list.findIndex((m) => m?.id === model);
+      if (idx < 0) continue; // 该模型没在这个 provider 下 → 不动
+      const cur = list[idx]?.input;
+      const hasImage = Array.isArray(cur) && cur.includes("image");
+      if (enable && !hasImage) {
+        // 保留已有的其它模态（去重），确保 image 在
+        const next = Array.isArray(cur) && cur.length ? [...new Set([...cur, "image"])] : ["text", "image"];
+        ops.push({ op: "set", path: ["providers", provider, "models", String(idx), "input"], value: next });
+        changed.push(`${provider}/${model}`);
+      } else if (!enable && hasImage) {
+        // 回收：去掉 image；空了就补 text
+        const next = cur.filter((x) => x !== "image");
+        ops.push({
+          op: "set",
+          path: ["providers", provider, "models", String(idx), "input"],
+          value: next.length ? next : ["text"],
+        });
+        changed.push(`${provider}/${model}`);
+      }
+    }
+    if (ops.length === 0) return { changed, error: "" };
+    try {
+      await settingsService.mutate("llm-pi-ai", ops);
+      return { changed, error: "" };
+    } catch (error) {
+      return { changed: [], error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+  /**
+   * 按当前偏好同步视觉路由；供插件启动与设置保存后调用。
+   * 失败只记警告 —— 它不该拖垮插件的其它功能。
+   */
+  deps.syncVisionRouting = async () => {
+    const mimo = deps.currentMimo?.() ?? cfg.mimo ?? DEFAULT_CONFIG.mimo;
+    const want = mimo.visionRouting === true;
+    const { changed, error } = await deps.applyVisionRouting(want);
+    if (error) {
+      ctx.logger?.warn?.("[dsh-mimo-usage] 视觉路由同步失败：%s", error);
+    } else if (changed.length) {
+      ctx.logger?.info?.(
+        `[dsh-mimo-usage] 视觉路由已${want ? "开启" : "关闭"}：${changed.join(", ")}`,
+      );
+    }
+    return { changed, error };
+  };
+
   // 跟踪当前生效的 provider/model。
   // 优先级：**当前选中的默认模型**（与 UI 同源，切了就算）→ request/header 事件
   //        → 落盘计数器快照 → 内置统计快照 → 空值。
@@ -1614,6 +1748,17 @@ export function apply(ctx, config) {
     try {
       // 真 schemastery 才注册：手写 schema 缺 toJSON 会让 describe() 把整个
       // 设置页一起拖垮（见 buildMimoSettingsSchema 的说明）。
+      // 启动时同步一次视觉路由：偏好可能在上次会话里已开启，但那次没能写成
+      // （插件重装、或 llm-pi-ai 的 models 后来被改过）。
+      // ⚠ 必须放在**注册成功与否之前** —— 视觉路由写的是 `llm-pi-ai` 命名空间，
+      // 与本插件自己的命名空间注册（需要 schemastery）**无关**。
+      // 放在 register 之后、或放在 `if (!schema) return` 之后，
+      // 都会在"拿不到 schemastery"的环境里静默失效（测试抓到过）。
+      // 幂等：已经写过就不产生 ops（applyVisionRouting 先比对现状）。
+      deps.syncVisionRouting?.().catch(() => {
+        /* 已内部记警告 */
+      });
+
       const schema = buildMimoSettingsSchema(settingsCtx);
       if (!schema) {
         ctx.logger?.warn?.(
@@ -1723,6 +1868,7 @@ export function apply(ctx, config) {
                       pillPosition: m.pillPosition ?? "header",
                       wrapToolbar: m.wrapToolbar !== false,
                       hideViewWhenNotMiMo: m.hideViewWhenNotMiMo === true,
+                      visionRouting: m.visionRouting === true,
                       billingTypeOverrides: m.billingTypeOverrides ?? {},
                       pricing: m.pricing ?? {},
                       writable: Boolean(userSettings),
@@ -1748,9 +1894,22 @@ export function apply(ctx, config) {
                   }
                   if (typeof body.wrapToolbar === "boolean") patch.wrapToolbar = body.wrapToolbar;
                   if (typeof body.hideViewWhenNotMiMo === "boolean") patch.hideViewWhenNotMiMo = body.hideViewWhenNotMiMo;
+                  if (typeof body.visionRouting === "boolean") patch.visionRouting = body.visionRouting;
                   await userSettings.update({ mimo: patch });
                   deps.clearOfficialCache?.();   // 设置已保存：官方数据作废
-                  writeJson(res, 200, { ok: true, data: { saved: Object.keys(patch) } });
+                  // 视觉路由是**跨命名空间写入**（改的是 llm-pi-ai 的模型声明），
+                  // 所以保存后立刻同步一次，并把结果回给界面（失败要能看见原因）。
+                  const vision = patch.visionRouting === undefined
+                    ? { changed: [], error: "" }
+                    : await deps.syncVisionRouting();
+                  writeJson(res, 200, {
+                    ok: true,
+                    data: {
+                      saved: Object.keys(patch),
+                      visionChanged: vision.changed,
+                      visionError: vision.error,
+                    },
+                  });
                   return;
                 }
                 writeJson(res, 405, { ok: false, error: "method not allowed" });

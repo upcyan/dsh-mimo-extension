@@ -776,6 +776,45 @@ if (loaded) {
   ok(url("https://token-plan-ams.xiaomimimo.com/v1") === "token-plan", "token-plan-ams → Token Plan");
   ok(url("https://api.xiaomimimo.com/v1") === "payg", "api.xiaomimimo.com → 按量计费");
 
+  // ---------- 视觉路由（09-27 加）----------
+  // 用户需求：在详情页加开关，启用 MiMo 的视觉路由。
+  // 平台按 `inputModalities` 硬拦截图片附件（MODEL_DOES_NOT_SUPPORT_IMAGES），
+  // 该值来自 llm-pi-ai 每个模型的 `input`。开关把多模态模型的 input 写全。
+  {
+    const mm = host.isBuiltinMultimodal;
+    const list = host.BUILTIN_MULTIMODAL_MODELS;
+    ok(Array.isArray(list) && list.length === 4, `内置多模态表有 4 条（实为 ${list?.length}）`);
+    for (const prov of ["xiaomi","xiaomi-token-plan-cn","xiaomi-token-plan-sgp","xiaomi-token-plan-ams"]) {
+      ok(mm(prov, "mimo-v2.5") === true, `${prov}/mimo-v2.5 是多模态`);
+    }
+    // ★ 关键：不能误伤纯文本模型
+    ok(mm("xiaomi-token-plan-cn", "mimo-v2.5-pro") === false,
+      "★ mimo-v2.5-pro（catalog 标 text）不被当成多模态");
+    ok(mm("xiaomi", "mimo-v2.5-pro-ultraspeed") === false, "mimo-v2.5-pro-ultraspeed 也不是");
+    ok(mm("mimo", "mimo-v2.6-flash") === false, "自建 provider 不在内置表（能力由用户自己声明）");
+    ok(mm("", "") === false && mm(undefined, undefined) === false, "空输入安全返回 false");
+
+    const src = readFileSync(join(here, "host.js"), "utf8");
+    ok(/deps\.applyVisionRouting = async/.test(src), "有 applyVisionRouting 写入器");
+    ok(/settingsService\.mutate\("llm-pi-ai", ops\)/.test(src),
+      "走 settings.mutate 写 llm-pi-ai（路径寻址，不重写整个 provider）");
+    ok(/op: "set",\s*\n\s*path: \["providers", provider, "models", String\(idx\), "input"\]/.test(src),
+      "op 精确指向 providers.<p>.models[<i>].input");
+    ok(/\[\.\.\.new Set\(\[\.\.\.cur, "image"\]\)\]/.test(src),
+      "已开启时保留其它模态并追加 image（去重）");
+    ok(/cur\.filter\(\(x\) => x !== "image"\)/.test(src), "关闭时去掉 image");
+    ok(/value: next\.length \? next : \["text"\]/.test(src), "回收后为空则补回 text（避免空数组）");
+    // ⚠ 启动同步的位置：必须在 schemastery 判空之前
+    const syncIdx = src.indexOf("deps.syncVisionRouting?.()");
+    const schemaIdx = src.indexOf("const schema = buildMimoSettingsSchema(settingsCtx)");
+    ok(syncIdx > 0 && schemaIdx > 0 && syncIdx < schemaIdx,
+      "★ 启动同步在 schemastery 判空**之前**（否则该环境里开关静默失效）");
+    ok(/visionRouting: bool\(mimo\.visionRouting, false\)/.test(src), "normalize 支持 visionRouting");
+    ok(/visionRouting: factory\.boolean\(\)\.default\(false\)/.test(src), "schema 支持 visionRouting（默认关）");
+    ok(/visionChanged: vision\.changed/.test(src) && /visionError: vision\.error/.test(src),
+      "POST /settings 回传结果（失败要能看见）");
+  }
+
   // ---------- 平台内置 provider 识别（09-27 修）----------
   // 用户反馈：用 `xiaomi-token-plan-cn/mimo-v2.5` 时没被识别成 MiMo。
   // 根因：旧规则只匹配 `/mimo/i`，而平台内置 provider 名**不含 mimo**。
