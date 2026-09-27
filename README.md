@@ -376,7 +376,7 @@ cd /vol1/1000/deepseek_harness/fnos
 dsh plugin --profile web add ./dsh-mimo-usage --config.minimumReleaseAge=0
 
 # 或从 tgz（跨机器分发推荐）
-dsh plugin --profile web add ./dsh-mimo-usage-0.2.0.tgz --config.minimumReleaseAge=0
+dsh plugin --profile web add ./dsh-mimo-usage-0.2.1.tgz --config.minimumReleaseAge=0
 ```
 
 安装后**重启 `dsh web`**，再刷新浏览器（F5）使新 boot graph 生效。
