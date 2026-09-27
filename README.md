@@ -412,6 +412,45 @@ dsh --profile web --dump-config | grep -A3 "mimo-usage"   # 应打印 id: mimo-u
             "deepseek-official/deepseek-chat": { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 }
 ```
 
+### 视觉路由（可选，默认关闭）
+
+在「MiMo 用量」页底部的表单里勾选 **「启用 MiMo 视觉路由（图像输入）」**。
+
+**为什么需要它**：平台按模型的 `inputModalities` **硬拦截**图片附件 ——
+`dsh-api-session-controller` 会抛
+`MODEL_DOES_NOT_SUPPORT_IMAGES`（`Model "x" does not support image input`）。
+该值最终来自 `llm-pi-ai` 里每个模型的 **`input`** 字段。开启后本插件把
+多模态模型的 `input` 写成 `["text","image"]`，图片就能发给它们。
+
+**只对平台目录声明支持图像的模型生效**（实测自 pi-ai 的
+`dist/providers/data/xiaomi*.json`）：
+
+| provider | 模型 | catalog 的 input | 本开关 |
+| --- | --- | --- | --- |
+| `xiaomi` / `xiaomi-token-plan-{cn,sgp,ams}` | **`mimo-v2.5`** | `["text","image"]` | ✅ 写入 |
+| 同上 | `mimo-v2.5-pro` | `["text"]` | ❌ **不碰** |
+| `xiaomi` | `mimo-v2.5-pro-ultraspeed` | `["text"]` | ❌ **不碰** |
+
+> ⚠ 刻意**不给纯文本模型撑腰**：硬声明图像支持会让失败从"明确拒绝"
+> 变成"图片被上游静默丢弃" —— 后者用户以为发出去了，更糟。
+> 自建 provider（如 `mimo`）也不在内置表里 —— 它的模型清单由你自己声明，
+> 能力也该由你自己声明。
+
+**写入方式**：`settings.mutate("llm-pi-ai", ops)` 的**路径寻址**
+（`providers.<p>.models[<i>].input`）—— 只改那一个字段，
+**不重写整个 provider**（那会覆盖你的其它设置）。**幂等**：已经是
+`["text","image"]` 就不写。关闭时去掉 `image` 并保留其它模态
+（空则补回 `["text"]`，不留空数组）。
+
+启动时会重新同步一次（开关可能比写入活得久：插件重装、配置被改）。
+
+**写失败会说出来**：`POST /settings` 回传 `visionChanged` / `visionError`，
+表单据此显示"已开启：`<模型列表>`"或失败原因，而不是只报"已保存"。
+
+> ⚠ 该写入是**跨命名空间**的（改的是 `llm-pi-ai`）。平台
+> `settings.write()` 只校验命名空间已注册、不校验调用者归属，所以可行；
+> 但若设置在只读 provider 上，会失败并如实报错。
+
 ## 结构
 
 - `host.js` — 宿主插件：注册 `/api/dsh-mimo-usage/*` 路由（balance / tokenPlan / usage / summary），Cookie 调官方接口，失败回退本地 usage 日志聚合；顺带注册 `/mimo` 斜杠命令与 `mimo_usage` 工具供模型查询。
