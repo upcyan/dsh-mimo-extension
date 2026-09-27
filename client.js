@@ -2597,18 +2597,60 @@
       bindLocale(ctx);
 
       // 1) 详情页 tab —— trajectory(10) 之后、额度(20) 之前
-      ctx.slots.inject("conversation.view", () =>
-        ctx.slots.register(
-          {
-            name: "conversation.view",
-            id: "mimo-usage",
-            order: 15,
-            locale: NS,
-            label: () => t("view.label"),
-          },
-          MimoUsageView,
-        ),
-      );
+      // ── 1) 详情页 tab：**可注销**（供「非 MiMo 时隐藏」用）──────────────
+      //
+      // ⚠ 为什么必须注销、而不是像胶囊那样"组件返回提示"：
+      // tab 行的文字**取自注册元数据的 `label`**，由平台这样构建列表
+      // （`dsh-client-ui-conversation` 的 `viewTabs()`）：
+      //     for (const entry of slots.entries("conversation.view"))
+      //       tabs.push({ id, label: resolveSlotLabel(entry.options.label) ?? id })
+      // 也就是说**组件渲染什么，tab 行根本看不到** —— 组件里返回 null/提示
+      // 只能让内容变，**tab 照样在**。想让 tab 消失，唯一途径是注销注册。
+      // 好在平台订阅了槽位变化（`slots.subscribe("conversation.view", refreshViews)`），
+      // 注销/重注册会触发 tab 列表刷新 —— 这正是我们要的。
+      // apply 层缓存的最近一次 summary（探针判定要用它的 isMiMo / provider）。
+      // 由下面那次主动 `rpc("summary")` 填充；偏好保存后也会刷新。
+      let latestSummary = null;
+
+      let disposeView = null;
+      let viewRegistered = false;
+      const ensureView = (wantShown) => {
+        if (wantShown === viewRegistered) return;
+        if (!wantShown) {
+          try {
+            disposeView?.();
+          } catch {
+            /* 忽略卸载异常 */
+          }
+          disposeView = null;
+          viewRegistered = false;
+          return;
+        }
+        ctx.slots.inject("conversation.view", () => {
+          disposeView = ctx.slots.register(
+            {
+              name: "conversation.view",
+              id: "mimo-usage",
+              order: 15,
+              locale: NS,
+              label: () => t("view.label"),
+            },
+            MimoUsageView,
+          );
+          return disposeView;
+        });
+        viewRegistered = true;
+      };
+
+      // ── 1b) 选中模型「探针」────────────────────────────────────────────
+      //
+      // apply 层拿不到 `useProjection`（那是**槽位组件的 hook**，在组件外调用会
+      // 直接抛 React #321），所以用一个**不渲染任何像素**的探针组件挂在
+      // `conversation.view` 里读投影，再经回调把结果交给 apply 层。
+      //
+      // ⚠ 探针必须挂在一个**始终存在**的座位上，否则一旦它自己被隐藏就断流。
+      // 这里挂在 `conversation.input.right`（胶囊座位之一）—— 它只在用户把胶囊
+      // 设为 hidden 时才不存在，而那种情况下详情页通常也不需要联动隐藏。
 
       // 2) 胶囊：按用户配置的位置动态注册 / 迁移
       //    位置来自宿主 summary.ui.pillPosition；首帧先用默认，拉取后自动迁移。
@@ -2644,9 +2686,80 @@
         });
       };
 
+      // 探针回传的选中模型 → 决定详情页 tab 是否挂出。
+      // 首次拿到选择前**不动**（首帧 ensureView(true) 已注册），避免闪烁。
+      let seenSelection = false;
+      const applyTabVisibility = () => {
+        // 偏好没开 → 永远显示
+        if (uiPrefs.hideViewWhenNotMiMo !== true) {
+          ensureView(true);
+          return;
+        }
+        if (!seenSelection) {
+          ensureView(true); // 还不知道选了什么 → 保守显示
+          return;
+        }
+        ensureView(lastSelectionIsMiMo);
+      };
+      let lastSelectionIsMiMo = true;
+      const onSelection = ({ provider, model }) => {
+        seenSelection = true;
+        // 与胶囊同一套判定：host 的地址级结论优先（summary.isMiMo），
+        // provider 一致才采信；否则按名字（provider 名或 model 名）兜底。
+        const hostSays = typeof latestSummary?.isMiMo === "boolean" ? latestSummary.isMiMo : undefined;
+        const sameProvider = latestSummary?.provider && latestSummary.provider === (provider || undefined);
+        const isMimo = hostSays !== undefined && sameProvider
+          ? hostSays
+          : isMiMoEntry(provider || undefined, model || undefined);
+        if (isMimo === lastSelectionIsMiMo && seenSelection) {
+          // 结果没变就不动注册（避免无谓的注销/重注册）
+          return;
+        }
+        lastSelectionIsMiMo = isMimo;
+        applyTabVisibility();
+      };
+
+      const ModelProbe = (props) => {
+        const hit = (() => {
+          try {
+            if (typeof props?.useProjection !== "function") return null;
+            const proj = props.useProjection("modelSelection");
+            return proj?.next ?? proj?.lastUsed ?? null;
+          } catch {
+            return null;
+          }
+        })();
+        const provider = typeof hit?.provider === "string" ? hit.provider : "";
+        const model = typeof hit?.model === "string" ? hit.model : "";
+        useEffect(() => {
+          onSelection({ provider, model });
+        }, [provider, model]);
+        return null; // 不渲染任何东西
+      };
+
       // 初始注册（默认 header），随后由偏好同步纠正
       ensureSeat(uiPrefs.position);
-      const onPrefs = () => ensureSeat(uiPrefs.position);
+      // 详情页初始挂出（偏好可能还没拉到）
+      ensureView(true);
+
+      // 探针：挂在**始终存在**的 composer.dock 上（不占视觉空间，返回 null）。
+      // 它是 apply 层获知"当前选中模型"的唯一途径 —— 见 ModelProbe 的说明。
+      ctx.slots.inject("conversation.composer.dock", () =>
+        ctx.slots.register(
+          {
+            name: "conversation.composer.dock",
+            id: "mimo-usage-probe",
+            order: 999,
+            locale: NS,
+            label: () => "",
+          },
+          ModelProbe,
+        ),
+      );
+      const onPrefs = () => {
+        ensureSeat(uiPrefs.position);
+        applyTabVisibility(); // hideViewWhenNotMiMo 可能刚被改
+      };
       uiPrefs.listeners.add(onPrefs);
 
       // 3) 工具栏换行：随偏好开/关
@@ -2664,6 +2777,7 @@
       // 主动拉一次偏好（不依赖胶囊是否已挂载）
       rpc("summary")
         .then((data) => {
+          if (data) latestSummary = data;
           if (data?.ui) {
             setUiPrefs({
               position: data.ui.pillPosition ?? "header",
@@ -2671,6 +2785,8 @@
               hideViewWhenNotMiMo: data.ui.hideViewWhenNotMiMo === true,
             });
           }
+          // 偏好（含 hideViewWhenNotMiMo）到手后重新评估一次 tab 可见性
+          applyTabVisibility();
         })
         .catch(() => {
           /* 偏好拉取失败时保持默认 */
@@ -2682,6 +2798,11 @@
           uiPrefs.listeners.delete(onWrap);
           try {
             disposeWrap();
+          } catch {
+            /* 忽略 */
+          }
+          try {
+            disposeView?.();
           } catch {
             /* 忽略 */
           }

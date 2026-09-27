@@ -287,6 +287,35 @@ for (const scene of SCENARIOS) {
   ok(/t\("cfg\.hideViewWhenNotMiMo"\)/.test(src), "设置表单有该开关");
   ok(/hideViewWhenNotMiMo,/.test(src), "保存时提交该字段");
 
+  // ---------- tab 隐藏必须靠注销注册（09-27 修）----------
+  // 用户反馈："开了隐藏，但 tab 还在"。
+  // 根因：tab 行文字取自**注册元数据的 label**，平台这样建列表
+  //   for (const entry of slots.entries("conversation.view")) tabs.push({id, label: resolveSlotLabel(entry.options.label)})
+  // 组件渲染什么 tab 行根本看不到 → 组件里 return null 只能改内容，tab 照样在。
+  ok(/let disposeView = null;/.test(src), "详情页注册可注销（disposeView）");
+  ok(/const ensureView = \(wantShown\) =>/.test(src), "有 ensureView 控制挂出/注销");
+  ok(/if \(wantShown === viewRegistered\) return;/.test(src), "状态未变时不重复注销/注册（防闪烁）");
+  ok(/label: \(\) => t\("view\.label"\)/.test(src), "注册时仍带 label（tab 文字来源）");
+  // 探针：apply 层拿不到 useProjection，必须靠组件回传
+  ok(/const ModelProbe = \(props\) =>/.test(src), "有 ModelProbe 探针组件");
+  ok(/conversation\.composer\.dock[\s\S]{0,400}?mimo-usage-probe/.test(src),
+    "探针挂在常驻槽位 composer.dock");
+  ok(/return null; \/\/ 不渲染任何东西/.test(src), "探针不渲染像素");
+  ok(/const onSelection = \(\{ provider, model }\) =>/.test(src), "探针经 onSelection 回传选中模型");
+  // 判定与胶囊同源
+  ok(/const sameProvider = latestSummary\?\.provider && latestSummary\.provider === \(provider \|\| undefined\)/.test(src),
+    "tab 可见性用 host 的地址级结论（provider 一致才采信）");
+  ok(/isMiMoEntry\(provider \|\| undefined, model \|\| undefined\)/.test(src),
+    "兜底走 isMiMoEntry");
+  // 关键安全行为
+  ok(/seenSelection = false/.test(src) && /if \(!seenSelection\)/.test(src),
+    "首次回传前保守显示（不知道选中什么时不隐藏）");
+  ok(/ensureView\(true\); \/\/ 还不知道选了什么 → 保守显示/.test(src),
+    "未知选中模型时保持挂出");
+  ok(/applyTabVisibility\(\); \/\/ hideViewWhenNotMiMo 可能刚被改/.test(src),
+    "偏好变化后重新评估 tab 可见性");
+  ok(/if \(data\) latestSummary = data;/.test(src), "apply 层缓存 summary 供探针判定");
+
   // ---------- Cookie 输入框必须可粘贴 ----------
   // 用户反馈过：Cookie 是几百字符的长串，输入框不支持弹出粘贴。
   // 根因是 type="password"（浏览器对其剪贴板行为有额外限制，且内容全是圆点无法核对）。
