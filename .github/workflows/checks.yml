@@ -1,0 +1,25 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 自检是纯 Node 脚本，不需要装 dsh —— 需要 dsh 的那一项会自动跳过
+      # （见 check.mjs 里 skip 的说明），所以这里 NOT 安装任何依赖。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Static + unit checks (host half)
+        run: node check.mjs
+
+      - name: Browser-half checks (offline, mock ctx)
+        run: node check-client.mjs
