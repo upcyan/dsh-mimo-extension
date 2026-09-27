@@ -1,0 +1,24 @@
+# 项目内部约定（含本机部署路径与工作区上下文），不随公开仓库发布
+AGENTS.md
+AGENTS.*.md
+
+# 打包产物
+*.tgz
+.pack/
+
+# 依赖与缓存
+node_modules/
+.pnpm-store/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# 本地测试产物（测试脚本在 pwtest/<project>/，不随仓库走）
+*.log
+
+# gh CLI 本地状态（含设备 ID，勿公开）
+.local/

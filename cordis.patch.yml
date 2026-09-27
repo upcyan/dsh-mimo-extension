@@ -1,0 +1,52 @@
+# dsh-mimo-usage 组合包 patch 层：安装后自激活，无需手改 profile 配置。
+#
+# ┌─ 配置方式（推荐）───────────────────────────────────────────────┐
+# │ 以下所有项都可以在 GUI 里改：                                        │
+# │   设置 → 插件（或「MiMo 用量」标签页）→ MiMo 额度配置                 │
+# │ 界面保存的值写入 settings.yaml 的 dsh-mimo-usage 命名空间，           │
+# │ 优先级高于本文件的 config（本文件只作为组成基线/默认值）。              │
+# └────────────────────────────────────────────────────────────────┘
+#
+# 鉴权（官方接口优先，未配置自动回退本地估算）：
+#   官方 MiMo 控制台接口需要浏览器登录 Cookie（platform.xiaomimimo.com）。
+#   打开 https://platform.xiaomimimo.com/#/console/balance → 登录 →
+#   浏览器 DevTools → Network → 任一 /api/v1 请求 → 复制完整 Cookie 请求头，
+#   粘贴到下面 mimo.cookie（保持单行，需含 api-platform_serviceToken 与 userId）。
+#   Cookie 过期后胶囊会显示"本地估算"，重新复制即可恢复官方数据。
+#
+# 套餐总量：官方 tokenPlan/detail + tokenPlan/usage 优先；
+#   未配置 Cookie 或接口失败时，用 mimo.planTotalTokens 兜底估算剩余百分比。
+#
+# 计费类型（billingTypeFor，可用 billingTypeOverrides 覆盖）：
+#   1) billingTypeOverrides（provider/model 或 provider）最优先
+#   2) provider 的 API 地址 baseURL（读 llm-pi-ai.providers.<id>.baseURL）：
+#      token-plan-*.xiaomimimo.com → 套餐；api.xiaomimimo.com 等 → 按量
+#      （小米按量与套餐两条通道的地址不同，所以地址最直接）
+#   3) provider 名含 token-plan → 套餐
+#   4) provider 叫 mimo 但地址没读到 → 按官方 tokenPlan/detail 状态兜底
+#      （expired/none → 按量；active/unknown → 套餐）
+#   5) 其余 provider → 按量（pay-as-you-go）
+- insert:
+    - id: mimo-usage
+      name: dsh-mimo-usage
+      config:
+        mimo:
+          # 官方控制台 Cookie（留空则只用本地估算）
+          cookie: ""
+          # 也可把 Cookie 存进凭据（.credentials.yaml 的 refs），此处填引用名
+          cookieRef: MIMO_CONSOLE_COOKIE
+          # 本地兜底套餐总量（tokens/月），官方接口可用时被覆盖
+          planTotalTokens: 500000000
+          # 额度胶囊位置：header=标题行 | toolbar=输入框工具栏 | above=输入框上方 | hidden=不显示
+          pillPosition: header
+          # 输入框工具栏自动换行（插件多时防止工具图标挤占重叠）
+          wrapToolbar: true
+          # 计费类型覆盖：'token-plan' | 'payg'
+          billingTypeOverrides: {}
+          # provider/model 单价（元/百万 tokens）
+          pricing:
+            fallbackPrice:
+              input: 0
+              output: 0
+              cacheRead: 0
+              cacheWrite: 0
