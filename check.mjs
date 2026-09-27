@@ -813,6 +813,29 @@ if (loaded) {
     ok(/visionRouting: factory\.boolean\(\)\.default\(false\)/.test(src), "schema 支持 visionRouting（默认关）");
     ok(/visionChanged: vision\.changed/.test(src) && /visionError: vision\.error/.test(src),
       "POST /settings 回传结果（失败要能看见）");
+    // 为纯文本模型提供视觉能力（子开关）
+    ok(Array.isArray(host.BUILTIN_TEXT_ONLY_MODELS) && host.BUILTIN_TEXT_ONLY_MODELS.length === 5,
+      `文本模型表 5 条（实为 ${host.BUILTIN_TEXT_ONLY_MODELS?.length}）`);
+    ok(host.isBuiltinMultimodal("xiaomi", "mimo-v2.5-pro-ultraspeed") === false,
+      "ultraspeed 归文本模型表（不是多模态）");
+    // ★ 两张表不能有交集 —— 否则回收会互相打架
+    {
+      const multi = new Set(host.BUILTIN_MULTIMODAL_MODELS.map((e) => `${e.provider}/${e.model}`));
+      const overlap = host.BUILTIN_TEXT_ONLY_MODELS.filter((e) => multi.has(`${e.provider}/${e.model}`));
+      ok(overlap.length === 0, `★ 多模态表与文本表无交集（实为 ${overlap.length} 个重叠）`);
+    }
+    ok(/deps\.applyVisionRouting = async \(enable, allowTextOnly = false\)/.test(src),
+      "applyVisionRouting 接受 allowTextOnly");
+    // 回收精确性：两张表各自决定去留
+    ok(/const wantImage = \(entry, isTextOnly\) =>/.test(src),
+      "每张表各自决定是否写 image（不做统一删 image 收尾）");
+    ok(/isTextOnly \? allowTextOnly : true/.test(src), "文本模型只在子开关开启时才写");
+    ok(/visionRoutingTextModels: bool\(mimo\.visionRoutingTextModels, false\)/.test(src),
+      "normalize 支持 visionRoutingTextModels");
+    ok(/visionRoutingTextModels: factory\.boolean\(\)\.default\(false\)/.test(src),
+      "schema 支持 visionRoutingTextModels（默认关）");
+    ok(/const allowTextOnly = want && mimo\.visionRoutingTextModels === true;/.test(src),
+      "★ 子开关只在主开关也开时生效");
   }
 
   // ---------- 平台内置 provider 识别（09-27 修）----------

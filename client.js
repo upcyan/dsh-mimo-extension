@@ -315,6 +315,8 @@
       "cfg.wrapToolbar": "允许输入框工具栏自动换行（防止工具图标挤占重叠）",
       "cfg.visionRouting": "启用 MiMo 视觉路由（图像输入）",
       "cfg.visionRoutingHint": "只对平台目录里声明支持图像的小米模型生效（如 mimo-v2.5）。开启后图片可以发给这些模型；纯文本模型（如 mimo-v2.5-pro）不会被改动。",
+      "cfg.visionTextModels": "同时为纯文本模型提供视觉能力",
+      "cfg.visionTextModelsHint": "给平台标为纯文本的模型（如 mimo-v2.5-pro、mimo-v2.5-pro-ultraspeed）也声明图像输入。⚠ 这属于越权声明：上游可能拒绝，或静默丢弃图片（你未必收到报错）。仅在确认这些模型实际能读图时开启。",
       "cfg.visionOn": "已开启视觉路由：{list}",
       "cfg.visionOff": "已关闭视觉路由：{list}",
       "cfg.visionFailed": "视觉路由设置失败：{error}",
@@ -430,6 +432,8 @@
       "cfg.wrapToolbar": "Let the composer toolbar wrap (prevents tool icons from overlapping)",
       "cfg.visionRouting": "Enable MiMo vision routing (image input)",
       "cfg.visionRoutingHint": "Applies only to the Xiaomi models the platform catalog declares as accepting images, such as mimo-v2.5. Text-only models like mimo-v2.5-pro are left untouched.",
+      "cfg.visionTextModels": "Also give text-only models vision",
+      "cfg.visionTextModelsHint": "Declares image input for models the catalog marks text-only, such as mimo-v2.5-pro and mimo-v2.5-pro-ultraspeed. Warning: this overstates their capability, so the upstream may refuse the image or drop it silently. Enable it only if you know these models can read images.",
       "cfg.visionOn": "Vision routing enabled: {list}",
       "cfg.visionOff": "Vision routing disabled: {list}",
       "cfg.visionFailed": "Vision routing failed: {error}",
@@ -2187,6 +2191,7 @@
       const [hideViewWhenNotMiMo, setHideViewWhenNotMiMo] = useState(false);
       const [visionRouting, setVisionRouting] = useState(false);
       const [visionMsg, setVisionMsg] = useState(null);
+      const [visionTextModels, setVisionTextModels] = useState(false);
       const [busy, setBusy] = useState(false);
       const [message, setMessage] = useState(null); // {kind:'ok'|'err', text}
 
@@ -2201,6 +2206,7 @@
             setWrapToolbar(data.wrapToolbar !== false);
             setHideViewWhenNotMiMo(data.hideViewWhenNotMiMo === true);
             setVisionRouting(data.visionRouting === true);
+            setVisionTextModels(data.visionRoutingTextModels === true);
           })
           .catch((error) => {
             if (alive) setMessage({ kind: "err", text: error instanceof Error ? error.message : String(error) });
@@ -2220,6 +2226,7 @@
             wrapToolbar,
             hideViewWhenNotMiMo,
             visionRouting,
+            visionRoutingTextModels: visionTextModels,
           };
           // Cookie 留空 = 不改；勾选清除 = 写空串
           if (clearCookie) payload.cookie = "";
@@ -2257,7 +2264,7 @@
         } finally {
           setBusy(false);
         }
-      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, onChange]);
+      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, visionTextModels, onChange]);
 
       const labelStyle = {
         display: "block",
@@ -2504,6 +2511,43 @@
                 "span",
                 { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
                 t("cfg.visionRoutingHint"),
+              ),
+            ),
+          ),
+          // 子开关：为纯文本模型也补 image。**主开关关闭时禁用**（单独开没意义）。
+          h(
+            "label",
+            {
+              style: {
+                fontSize: "12px",
+                display: "flex",
+                gap: "6px",
+                alignItems: "flex-start",
+                lineHeight: 1.5,
+                marginLeft: "18px",
+                cursor: visionRouting && !busy ? "pointer" : "default",
+                opacity: visionRouting ? 1 : 0.5,
+              },
+            },
+            h("input", {
+              type: "checkbox",
+              checked: visionTextModels,
+              disabled: busy || !visionRouting,
+              onChange: (e) => {
+                setVisionTextModels(e.currentTarget.checked);
+                setMessage(null);
+                setVisionMsg(null);
+              },
+              style: { marginTop: "2px" },
+            }),
+            h(
+              "span",
+              null,
+              t("cfg.visionTextModels"),
+              h(
+                "span",
+                { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
+                t("cfg.visionTextModelsHint"),
               ),
             ),
           ),

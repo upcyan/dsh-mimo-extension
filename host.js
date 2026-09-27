@@ -104,6 +104,8 @@ function mimoSettingsSchema(input) {
       hideViewWhenNotMiMo: bool(mimo.hideViewWhenNotMiMo, false),
       // 启用 MiMo 视觉路由：向 llm-pi-ai 写入 models[].input 含 image
       visionRouting: bool(mimo.visionRouting, false),
+      // 额外为**纯文本**模型补 image（越权，风险自负，默认关）
+      visionRoutingTextModels: bool(mimo.visionRoutingTextModels, false),
       billingTypeOverrides:
         mimo.billingTypeOverrides && typeof mimo.billingTypeOverrides === "object" ? mimo.billingTypeOverrides : {},
       pricing: {
@@ -197,6 +199,7 @@ export function buildMimoSettingsSchema(ctx) {
       wrapToolbar: factory.boolean().default(true),
       hideViewWhenNotMiMo: factory.boolean().default(false),
       visionRouting: factory.boolean().default(false),
+      visionRoutingTextModels: factory.boolean().default(false),
       // 动态键（provider 或 provider/model），结构由 mimoSettingsSchema 兜底。
       // 注意 schemastery 的 dict 签名是 dict(值, 键) —— 第一个参数是 inner(值)。
       billingTypeOverrides: factory.dict(factory.any(), factory.string()).default({}),
@@ -1116,6 +1119,27 @@ export const BUILTIN_MULTIMODAL_MODELS = [
  * @param {string} model
  * @returns {boolean}
  */
+/**
+ * 平台 catalog 里**纯文本**的小米模型（`input` 不含 image）。
+ *
+ * 用途：可选的「为文本模型提供视觉能力」开关据此**只**给这些模型补 image。
+ * 与 `BUILTIN_MULTIMODAL_MODELS` 分开维护，是为了**回收干净**：
+ * 关闭开关时只删我们加上的那些，绝不误删 catalog 本就声明 image 的模型。
+ *
+ * ⚠ 硬给纯文本模型声明 image 是**越权**行为：上游可能拒绝，
+ * 或**静默丢弃图片**（用户以为发出去了 —— 比明确报错更糟）。
+ * 所以它单独一个开关、默认关闭，且文案要写明风险。
+ *
+ * 数据来源同 `BUILTIN_MULTIMODAL_MODELS`（pi-ai `dist/providers/data/xiaomi*.json`）。
+ */
+export const BUILTIN_TEXT_ONLY_MODELS = [
+  { provider: "xiaomi", model: "mimo-v2.5-pro" },
+  { provider: "xiaomi", model: "mimo-v2.5-pro-ultraspeed" },
+  { provider: "xiaomi-token-plan-cn", model: "mimo-v2.5-pro" },
+  { provider: "xiaomi-token-plan-sgp", model: "mimo-v2.5-pro" },
+  { provider: "xiaomi-token-plan-ams", model: "mimo-v2.5-pro" },
+];
+
 export function isBuiltinMultimodal(provider, model) {
   if (typeof provider !== "string" || typeof model !== "string") return false;
   return BUILTIN_MULTIMODAL_MODELS.some((e) => e.provider === provider && e.model === model);
@@ -1394,6 +1418,7 @@ async function buildSummary(deps, signal, options = {}) {
     wrapToolbar: mimo.wrapToolbar !== false,
     hideViewWhenNotMiMo: mimo.hideViewWhenNotMiMo === true,
     visionRouting: mimo.visionRouting === true,
+    visionRoutingTextModels: mimo.visionRoutingTextModels === true,
   };
 
   // 浏览器半边的自诊断回传（脚本加载 → 工厂 → apply），诊断"装了没生效"
@@ -1666,12 +1691,11 @@ export function apply(ctx, config) {
    * @param {boolean} enable - true=声明图像输入；false=回收成 ["text"]
    * @returns {Promise<{changed: string[], error: string}>}
    */
-  deps.applyVisionRouting = async (enable) => {
+  deps.applyVisionRouting = async (enable, allowTextOnly = false) => {
     const changed = [];
     if (!settingsService || typeof settingsService.mutate !== "function") {
       return { changed, error: "设置服务不可写（settings.mutate 不可用）" };
     }
-    // 读出当前文档，只看内置表里的模型（精确匹配）
     let doc;
     try {
       doc = settingsService.get("llm-pi-ai");
@@ -1679,20 +1703,34 @@ export function apply(ctx, config) {
       return { changed, error: "读不到 llm-pi-ai 命名空间" };
     }
     const providers = doc?.providers ?? {};
+
+    // 目标 = 多模态模型（开关开时写）∪ 文本模型（**两个开关都开时**才写）
+    //
+    // ⚠ 回收的精确性是这里的关键：**每张表各自决定自己去留**，
+    // 绝不用"统一删 image"收尾 —— 那样会把 catalog 本就声明 image 的
+    // `mimo-v2.5` 也删掉（它不归文本模型开关管）。
+    const wantImage = (entry, isTextOnly) =>
+      enable && (isTextOnly ? allowTextOnly : true);
+    const targets = [
+      ...BUILTIN_MULTIMODAL_MODELS.map((e) => ({ ...e, textOnly: false })),
+      ...BUILTIN_TEXT_ONLY_MODELS.map((e) => ({ ...e, textOnly: true })),
+    ];
+
     const ops = [];
-    for (const { provider, model } of BUILTIN_MULTIMODAL_MODELS) {
+    for (const { provider, model, textOnly } of targets) {
       const list = providers?.[provider]?.models;
       if (!Array.isArray(list)) continue; // 该 provider 没配 → 不动
       const idx = list.findIndex((m) => m?.id === model);
       if (idx < 0) continue; // 该模型没在这个 provider 下 → 不动
       const cur = list[idx]?.input;
       const hasImage = Array.isArray(cur) && cur.includes("image");
-      if (enable && !hasImage) {
+      const want = wantImage({ provider, model }, textOnly);
+      if (want && !hasImage) {
         // 保留已有的其它模态（去重），确保 image 在
         const next = Array.isArray(cur) && cur.length ? [...new Set([...cur, "image"])] : ["text", "image"];
         ops.push({ op: "set", path: ["providers", provider, "models", String(idx), "input"], value: next });
         changed.push(`${provider}/${model}`);
-      } else if (!enable && hasImage) {
+      } else if (!want && hasImage) {
         // 回收：去掉 image；空了就补 text
         const next = cur.filter((x) => x !== "image");
         ops.push({
@@ -1719,12 +1757,14 @@ export function apply(ctx, config) {
   deps.syncVisionRouting = async () => {
     const mimo = deps.currentMimo?.() ?? cfg.mimo ?? DEFAULT_CONFIG.mimo;
     const want = mimo.visionRouting === true;
-    const { changed, error } = await deps.applyVisionRouting(want);
+    // 文本模型只在视觉路由也开的前提下才补 image（单独开没有意义）
+    const allowTextOnly = want && mimo.visionRoutingTextModels === true;
+    const { changed, error } = await deps.applyVisionRouting(want, allowTextOnly);
     if (error) {
-      ctx.logger?.warn?.("[dsh-mimo-usage] 视觉路由同步失败：%s", error);
+      ctx.logger?.warn?.(`[dsh-mimo-usage] 视觉路由同步失败：${error}`);
     } else if (changed.length) {
       ctx.logger?.info?.(
-        `[dsh-mimo-usage] 视觉路由已${want ? "开启" : "关闭"}：${changed.join(", ")}`,
+        `[dsh-mimo-usage] 视觉路由已${want ? "开启" : "关闭"}（含文本模型：${allowTextOnly ? "是" : "否"}）：${changed.join(", ")}`,
       );
     }
     return { changed, error };
@@ -1869,6 +1909,7 @@ export function apply(ctx, config) {
                       wrapToolbar: m.wrapToolbar !== false,
                       hideViewWhenNotMiMo: m.hideViewWhenNotMiMo === true,
                       visionRouting: m.visionRouting === true,
+                      visionRoutingTextModels: m.visionRoutingTextModels === true,
                       billingTypeOverrides: m.billingTypeOverrides ?? {},
                       pricing: m.pricing ?? {},
                       writable: Boolean(userSettings),
@@ -1895,13 +1936,16 @@ export function apply(ctx, config) {
                   if (typeof body.wrapToolbar === "boolean") patch.wrapToolbar = body.wrapToolbar;
                   if (typeof body.hideViewWhenNotMiMo === "boolean") patch.hideViewWhenNotMiMo = body.hideViewWhenNotMiMo;
                   if (typeof body.visionRouting === "boolean") patch.visionRouting = body.visionRouting;
+                  if (typeof body.visionRoutingTextModels === "boolean") patch.visionRoutingTextModels = body.visionRoutingTextModels;
                   await userSettings.update({ mimo: patch });
                   deps.clearOfficialCache?.();   // 设置已保存：官方数据作废
                   // 视觉路由是**跨命名空间写入**（改的是 llm-pi-ai 的模型声明），
                   // 所以保存后立刻同步一次，并把结果回给界面（失败要能看见原因）。
-                  const vision = patch.visionRouting === undefined
-                    ? { changed: [], error: "" }
-                    : await deps.syncVisionRouting();
+                  const visionTouched =
+                    patch.visionRouting !== undefined || patch.visionRoutingTextModels !== undefined;
+                  const vision = visionTouched
+                    ? await deps.syncVisionRouting()
+                    : { changed: [], error: "" };
                   writeJson(res, 200, {
                     ok: true,
                     data: {

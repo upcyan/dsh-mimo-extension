@@ -290,7 +290,7 @@ for (const scene of SCENARIOS) {
   // 视觉路由开关
   ok(/const \[visionRouting, setVisionRouting\] = useState\(false\)/.test(src), "有 visionRouting 状态");
   ok(/setVisionRouting\(data\.visionRouting === true\)/.test(src), "载入时读取 visionRouting");
-  ok(/\n\s+visionRouting,\n\s+\};/.test(src), "保存时提交该字段");
+  ok(/\n\s+visionRouting,/.test(src), "保存时提交 visionRouting");
   ok(/t\("cfg\.visionRouting"\)/.test(src), "设置表单有该开关");
   ok(/t\("cfg\.visionRoutingHint"\)/.test(src), "开关带说明文案");
   // 跨命名空间写入可能失败，必须回显结果
@@ -302,6 +302,21 @@ for (const scene of SCENARIOS) {
   // i18n 成对
   for (const k of ["cfg.visionRouting","cfg.visionRoutingHint","cfg.visionOn","cfg.visionOff","cfg.visionFailed"]) {
     const zh = /const zh = \{/.test(src);
+    ok(src.includes(`"${k}":`), `有文案 ${k}`);
+  }
+
+  // 为纯文本模型提供视觉能力（子开关）
+  ok(/const \[visionTextModels, setVisionTextModels\] = useState\(false\)/.test(src), "有 visionTextModels 状态");
+  ok(/setVisionTextModels\(data\.visionRoutingTextModels === true\)/.test(src), "载入时读取该字段");
+  ok(/visionRoutingTextModels: visionTextModels,/.test(src), "保存时提交该字段");
+  ok(/t\("cfg\.visionTextModels"\)/.test(src), "表单有子开关");
+  ok(/t\("cfg\.visionTextModelsHint"\)/.test(src), "子开关带说明");
+  // ★ 子开关必须依赖主开关（关时禁用），否则单独开没有意义
+  ok(/disabled: busy \|\| !visionRouting/.test(src), "★ 主开关关闭时子开关禁用");
+  ok(/opacity: visionRouting \? 1 : 0\.5/.test(src), "禁用态有视觉反馈");
+  // 依赖数组要带上
+  ok(/visionRouting, visionTextModels, onChange\]/.test(src), "依赖数组含 visionTextModels");
+  for (const k of ["cfg.visionTextModels","cfg.visionTextModelsHint"]) {
     ok(src.includes(`"${k}":`), `有文案 ${k}`);
   }
 
