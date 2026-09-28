@@ -815,6 +815,22 @@ if (loaded) {
     ok(!/unset.*LEGACY_SETTINGS_NS|delete.*legacy/i.test(src), "不删除旧段（留作回滚依据）");
   }
 
+  // ---------- 视觉路由覆盖自建小米渠道（09-28 用户反馈）----------
+  // 用户开了开关，往自建 `mimo` 渠道（baseURL 指向 xiaomimimo.com）贴图仍被拒 ——
+  // 因为静态表只认内置渠道名。现在动态发现同源地址的自建渠道。
+  {
+    const src = readFileSync(join(here, "host.js"), "utf8");
+    ok(/isMiMoBaseURL\(profile\?\.baseURL\)/.test(src),
+      "★ 自建渠道按 **地址** 判定（isMiMoBaseURL，与 MiMo 身份判定同源）");
+    ok(!/providerName === "mimo"/.test(src), "不按渠道名写死（自建渠道名字任意）");
+    ok(/\/^-pro|-ultraspeed\/i|\/-pro|-ultraspeed\/i/.test(src.replace(/\n/g," ")) || /-pro|-ultraspeed/i.test("x"),
+      "v2.5-pro/ultraspeed 归入纯文本表（子开关）");
+    ok(/\^mimo-\/i/.test(src), "只处理 mimo 系模型（其余模型不动）");
+    // 幂等：已在静态表里的不重复加
+    ok(/targets\.some\(\(t\) => t\.provider === providerName && t\.model === id\)/.test(src),
+      "已在静态表里的模型不重复加（幂等）");
+  }
+
   // ---------- 登录失效识别 + Cookie 校验端点（09-28 加）----------
   {
     const src = readFileSync(join(here, "host.js"), "utf8");

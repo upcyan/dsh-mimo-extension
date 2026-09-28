@@ -1795,10 +1795,42 @@ export function apply(ctx, config) {
     // `mimo-v2.5` 也删掉（它不归文本模型开关管）。
     const wantImage = (entry, isTextOnly) =>
       enable && (isTextOnly ? allowTextOnly : true);
-    const targets = [
+    let targets = [
       ...BUILTIN_MULTIMODAL_MODELS.map((e) => ({ ...e, textOnly: false })),
       ...BUILTIN_TEXT_ONLY_MODELS.map((e) => ({ ...e, textOnly: true })),
     ];
+
+    // ── 自建小米渠道（动态发现）────────────────────────────────────────
+    // 用户反馈（09-28）：开了视觉路由，往自建 `mimo` 渠道贴图仍被拒。
+    // 根因：上面的静态表只认**平台内置渠道名**（xiaomi*），而自建渠道
+    //（如 `mimo`，baseURL 指向 token-plan-cn.xiaomimimo.com）不在表内，
+    // 它的 `mimo-v2.6-flash` 也就拿不到 image 声明。
+    //
+    // ✅ 纳入条件与「是不是 MiMo」的判定**同源**：baseURL 是 xiaomimimo.com
+    //    域名（isMiMoBaseURL）—— 按地址，不按渠道名。这样自建网关叫什么
+    //    名字都行，但**别家的网关不会被误纳**。
+    //
+    // 模型归类（按官方资料）：
+    //   · v2.5（非 pro）→ 多模态：官方 catalog 对内置渠道本就声明 image
+    //   · v2.6 系列     → 多模态：官方文档称"全模态"，且有图片理解章节
+    //                     ⚠ dsh 内置目录还没有 v2.6（滞后），声明是我们补的，
+    //                     依据是官方文档而非目录 —— 文案里要说明这一点
+    //   · v2.5-pro / -ultraspeed → 纯文本（子开关管）
+    // 其余模型不动；非小米渠道（如 glm）完全不碰。
+    for (const [providerName, profile] of Object.entries(providers)) {
+      if (!isMiMoBaseURL(profile?.baseURL)) continue;
+      for (const m of Array.isArray(profile?.models) ? profile.models : []) {
+        const id = String(m?.id ?? "");
+        if (!/^mimo-/i.test(id)) continue;
+        // 已在静态表里的（provider/model 同名）不重复加
+        if (targets.some((t) => t.provider === providerName && t.model === id)) continue;
+        if (/-pro|-ultraspeed/i.test(id)) {
+          targets.push({ provider: providerName, model: id, textOnly: true });
+        } else {
+          targets.push({ provider: providerName, model: id, textOnly: false });
+        }
+      }
+    }
 
     // 🔴 **绝不能把数组下标写进 path**（线上事故，09-28 修）。
     //
