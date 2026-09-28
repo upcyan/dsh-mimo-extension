@@ -826,9 +826,9 @@ if (loaded) {
     ok(/\/^-pro|-ultraspeed\/i|\/-pro|-ultraspeed\/i/.test(src.replace(/\n/g," ")) || /-pro|-ultraspeed/i.test("x"),
       "v2.5-pro/ultraspeed 归入纯文本表（子开关）");
     ok(/\^mimo-\/i/.test(src), "只处理 mimo 系模型（其余模型不动）");
-    // 幂等：已在静态表里的不重复加
-    ok(/targets\.some\(\(t\) => t\.provider === providerName && t\.model === id\)/.test(src),
-      "已在静态表里的模型不重复加（幂等）");
+    // 幂等：动态归类的模型并入 mmKeys/txtKeys 集合（Set 天然去重）
+    ok(/txtKeys\.add\(k\); else mmKeys\.add\(k\);/.test(src.replace(/\n/g, " ")),
+      "自建渠道模型并入集合（Set 去重 = 幂等）");
   }
 
   // ---------- 登录失效识别 + Cookie 校验端点（09-28 加）----------
@@ -903,8 +903,8 @@ if (loaded) {
       const overlap = host.BUILTIN_TEXT_ONLY_MODELS.filter((e) => multi.has(`${e.provider}/${e.model}`));
       ok(overlap.length === 0, `★ 多模态表与文本表无交集（实为 ${overlap.length} 个重叠）`);
     }
-    ok(/deps\.applyVisionRouting = async \(enable, allowTextOnly = false\)/.test(src),
-      "applyVisionRouting 接受 allowTextOnly");
+    ok(/deps\.applyVisionRouting = async \(enable, allowTextOnly = false, allowAllMimo = false\)/.test(src),
+      "applyVisionRouting 接受 allowTextOnly 与 allowAllMimo");
     // 回收精确性：两张表各自决定去留
     // 🔴 数组路径事故回归（09-28）：平台的 applyPathOp 只认 plain object，
     // 一旦 path 里带数组下标，整个 models 数组会被当空对象重建 →
@@ -914,13 +914,27 @@ if (loaded) {
     ok(!/path: \["providers", provider, "models", String\(idx\)/.test(src),
       "★ 已不再使用带数组下标的 path（那是数据损坏的根因）");
     // 同一 provider 必须只推一条 op（整条数组替换，多条会互相覆盖）
-    ok(/const byProvider = new Map\(\)/.test(src), "★ 按 provider 聚合（避免多条 op 互相覆盖）");
-    ok(/for \(const \[provider, group\] of byProvider\)/.test(src), "按 provider 遍历生成 op");
+    // 聚合方式 09-28 演进：先按目标表分组（byProvider Map），
+    // 重构为直接遍历 providers —— 管辖判定收进 wantImage/managed，
+    // 每个 provider 仍只推**一条** op（整条数组替换，多条会互相覆盖）。
+    ok(/for \(const \[provider, profile\] of Object\.entries\(providers\)\)/.test(src),
+      "★ 直接遍历 providers 生成 op（每 provider 一条）");
+    ok(/touched = true;/.test(src), "有变更才推 op（touched 标记）");
     // 值必须是完整数组且元素保留 id/name
     ok(/return \{ \.\.\.m, input: next \};/.test(src), "value 里浅拷贝模型对象（保留 id/name）");
-    ok(/const wantImage = \(entry, isTextOnly\) =>/.test(src),
-      "每张表各自决定是否写 image（不做统一删 image 收尾）");
-    ok(/isTextOnly \? allowTextOnly : true/.test(src), "文本模型只在子开关开启时才写");
+    // 统一 want：三开关并集；**管辖外的模型永不改动**
+    //（openai-codex 等渠道目录声明的 image 绝不能被当"多余"回收）
+    ok(/const managed = \(providerName, modelId, profile\) =>/.test(src),
+      "★ 有管辖判定 managed（只改自己管辖的模型）");
+    ok(/mmKeys\.has\(k\) \|\| txtKeys\.has\(k\) \|\| channelIsMimo\(providerName, profile\)/.test(src.replace(/\n/g, " ")),
+      "★ 管辖 = 多模态表 ∪ 文本表 ∪ MiMo 渠道");
+    ok(/if \(!managed\(provider, m\.id, profile\)\) return m;/.test(src),
+      "★ 管辖外原样保留（不回收别人声明的 image）");
+    ok(/const wantImage = \(providerName, modelId, profile\) =>/.test(src),
+      "统一 want 函数（三开关并集，不做统一删 image 收尾）");
+    ok(/if \(allowTextOnly && txtKeys\.has\(k\)\) return true;/.test(src), "文本模型只在子开关开启时才写");
+    ok(/if \(allowAllMimo && channelIsMimo\(providerName, profile\)\) return true;/.test(src),
+      "★ 全量开关：MiMo 渠道上的全部模型");
     ok(/visionRoutingTextModels: bool\(mimo\.visionRoutingTextModels, false\)/.test(src),
       "normalize 支持 visionRoutingTextModels");
     ok(/visionRoutingTextModels: factory\.boolean\(\)\.default\(false\)/.test(src),

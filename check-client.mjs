@@ -339,7 +339,8 @@ for (const scene of SCENARIOS) {
   ok(/disabled: busy \|\| !visionRouting/.test(src), "★ 主开关关闭时子开关禁用");
   ok(/opacity: visionRouting \? 1 : 0\.5/.test(src), "禁用态有视觉反馈");
   // 依赖数组要带上
-  ok(/visionRouting, visionTextModels, onChange\]/.test(src), "依赖数组含 visionTextModels");
+  ok(/visionRouting, visionTextModels, visionAllMimo, onChange\]/.test(src),
+    "依赖数组含 visionTextModels 与 visionAllMimo");
   // ---------- 额度耗尽预测（09-28 用户需求）----------
   {
     // 单位换算：limit/used 是官方口径（Credits），avgDaily/monthTokens 是 tokens

@@ -117,6 +117,7 @@ function mimoSettingsSchema(input) {
       visionRouting: bool(mimo.visionRouting, false),
       // 额外为**纯文本**模型补 image（越权，风险自负，默认关）
       visionRoutingTextModels: bool(mimo.visionRoutingTextModels, false),
+      visionRoutingAllMimo: bool(mimo.visionRoutingAllMimo, false),
       billingTypeOverrides:
         mimo.billingTypeOverrides && typeof mimo.billingTypeOverrides === "object" ? mimo.billingTypeOverrides : {},
       pricing: {
@@ -236,6 +237,7 @@ export function buildFallbackSettingsSchema() {
           hideViewWhenNotMiMo: { type: "boolean", default: false },
           visionRouting: { type: "boolean", default: false },
           visionRoutingTextModels: { type: "boolean", default: false },
+          visionRoutingAllMimo: { type: "boolean", default: false },
         },
       },
     },
@@ -258,6 +260,7 @@ export function buildMimoSettingsSchema(ctx) {
       hideViewWhenNotMiMo: factory.boolean().default(false),
       visionRouting: factory.boolean().default(false),
       visionRoutingTextModels: factory.boolean().default(false),
+      visionRoutingAllMimo: factory.boolean().default(false),
       // 动态键（provider 或 provider/model），结构由 mimoSettingsSchema 兜底。
       // 注意 schemastery 的 dict 签名是 dict(值, 键) —— 第一个参数是 inner(值)。
       billingTypeOverrides: factory.dict(factory.any(), factory.string()).default({}),
@@ -1352,6 +1355,8 @@ async function buildSummary(deps, signal, options = {}) {
     officialError: "",
     // 登录是否失效（官方接口 401）。与「网络/上游故障」分开 —— 前者要用户重新登录。
     authExpired: false,
+    stale: false,
+    staleAt: null,
     cookieSource,
     plan: null,
     planUsage: null,
@@ -1380,6 +1385,9 @@ async function buildSummary(deps, signal, options = {}) {
   result.official = official.official;
   result.officialError = official.officialError;
   result.authExpired = official.authExpired === true;
+  // 缓存兜底：official=true 但 stale=true ⇒ 数据是上次成功时的快照
+  result.stale = official.stale === true;
+  result.staleAt = official.staleAt ?? null;
   result.plan = official.plan;
   result.planUsage = official.planUsage;
   result.balance = official.balance;
@@ -1497,6 +1505,7 @@ async function buildSummary(deps, signal, options = {}) {
     hideViewWhenNotMiMo: mimo.hideViewWhenNotMiMo === true,
     visionRouting: mimo.visionRouting === true,
     visionRoutingTextModels: mimo.visionRoutingTextModels === true,
+    visionRoutingAllMimo: mimo.visionRoutingAllMimo === true,
   };
 
   // 浏览器半边的自诊断回传（脚本加载 → 工厂 → apply），诊断"装了没生效"
@@ -1690,6 +1699,16 @@ export function apply(ctx, config) {
   //   ② 多标签页无法共享，账号 Cookie 的请求频率被放大。
   let officialCache = null;
   let officialAt = 0;
+  // ── 最后一次成功结果的快照（缓存兜底）──────────────────────────
+  // 用户反馈（09-28）：Cookie 过期后，之前拿到的官方数据就没了 ——
+  // 界面退回「本地估算」，把真实套餐数据丢掉很可惜。
+  // 现在成功时额外留一份快照；之后 401/网络失败时返回它并打上
+  // `stale` 标记（`staleAt` = 数据的实际时间），让界面能如实标注
+  // 「当前为缓存数据」。
+  // ⚠ 快照**不带过期上限**：数据多旧由 `staleAt` 如实呈现，交给用户判断
+  //   （套餐数据变化慢，几周前的余额也仍有参考价值）。
+  let lastGoodOfficial = null;
+  let lastGoodAt = 0;
   let officialInflight = null;
   deps.getOfficial = async ({ apiBase, cookie, signal, force } = {}) => {
     if (!cookie) {
@@ -1730,6 +1749,9 @@ export function apply(ctx, config) {
         value.balance = balance;
         value.plan = plan;
         value.planUsage = usage;
+        // 成功 → 更新快照（浅拷贝即可：value 每次新建，字段都是本次请求的）
+        lastGoodOfficial = { ...value };
+        lastGoodAt = Date.now();
       } else {
         const errs = [];
         if (!okB) errs.push(`balance: ${msgOf(rawB)}`);
@@ -1740,6 +1762,26 @@ export function apply(ctx, config) {
         // 前者要用户重新登录，后者等重试即可，界面提示完全不同。
         value.authExpired =
           isUnauthorized(rawB) || isUnauthorized(rawD) || isUnauthorized(rawU);
+
+        // ── 缓存兜底（用户需求：过期后保留之前的数据）──────────────────
+        // 失败时若手里有成功快照，就返回它并打上 `stale` 标记 ——
+        // 界面据此显示「当前为缓存数据（截至 X）」，而不是退回粗粒度的
+        // 本地估算。真实套餐数据比估算有用得多。
+        // ⚠ 仅 401（登录失效）与网络/上游失败都兜 —— 两者的区别只体现在
+        //   `authExpired` 与界面文案上。
+        if (lastGoodOfficial) {
+          const stale = {
+            ...lastGoodOfficial,
+            authExpired: value.authExpired,
+            officialError: value.officialError,
+            stale: true,
+            staleAt: lastGoodAt,
+            // 数据虽是快照，但「套餐状态」的结论沿用快照当时的 —— 已注明
+          };
+          officialCache = stale;
+          officialAt = Date.now();
+          return stale;
+        }
       }
       officialCache = value;
       officialAt = Date.now();
@@ -1775,7 +1817,7 @@ export function apply(ctx, config) {
    * @param {boolean} enable - true=声明图像输入；false=回收成 ["text"]
    * @returns {Promise<{changed: string[], error: string}>}
    */
-  deps.applyVisionRouting = async (enable, allowTextOnly = false) => {
+  deps.applyVisionRouting = async (enable, allowTextOnly = false, allowAllMimo = false) => {
     const changed = [];
     if (!settingsService || typeof settingsService.mutate !== "function") {
       return { changed, error: "设置服务不可写（settings.mutate 不可用）" };
@@ -1788,49 +1830,55 @@ export function apply(ctx, config) {
     }
     const providers = doc?.providers ?? {};
 
-    // 目标 = 多模态模型（开关开时写）∪ 文本模型（**两个开关都开时**才写）
+    // 目标与「该不该有 image」的判定 —— **统一 want 函数，单一事实来源**。
+    // 三个开关各认领一块，按模型取并集；谁关了就重算，不会互相打架：
+    //   ① 主开关        ：多模态表（内置渠道 + 自建小米渠道的 v2.5 / v2.6）
+    //   ② 子开关        ：纯文本表（…-pro / -ultraspeed）
+    //   ③ 全量开关(新)  ：**判定为 MiMo 渠道**上的全部模型 —— 复用既有的
+    //      resolveMiMoChannel（地址优先、名字兜底），覆盖上一轮按 id 模式
+    //      匹配漏掉的：别名模型、地址未知的自建网关、未来新模型。
     //
-    // ⚠ 回收的精确性是这里的关键：**每张表各自决定自己去留**，
-    // 绝不用"统一删 image"收尾 —— 那样会把 catalog 本就声明 image 的
-    // `mimo-v2.5` 也删掉（它不归文本模型开关管）。
-    const wantImage = (entry, isTextOnly) =>
-      enable && (isTextOnly ? allowTextOnly : true);
-    let targets = [
-      ...BUILTIN_MULTIMODAL_MODELS.map((e) => ({ ...e, textOnly: false })),
-      ...BUILTIN_TEXT_ONLY_MODELS.map((e) => ({ ...e, textOnly: true })),
-    ];
+    // ⚠ 管辖边界（安全的根基）：**只有"被任一开关管辖"的模型才会被改写**。
+    //    判定函数 `managed()` 与开关状态无关（纯检测）；开关只影响 `want`。
+    //    这样：关掉某个开关 → 它管辖的模型被回收；但 **管辖之外的模型
+    //    （如 openai-codex 的 `["text","image"]`）永远原样保留** ——
+    //    若把"非候选"也当 want=false 处理，会把用户/目录声明的 image 剥掉。
+    const keyOf = (providerName, modelId) => `${providerName}\u0000${modelId}`;
+    const mmKeys = new Set(BUILTIN_MULTIMODAL_MODELS.map((e) => keyOf(e.provider, e.model)));
+    const txtKeys = new Set(BUILTIN_TEXT_ONLY_MODELS.map((e) => keyOf(e.provider, e.model)));
 
-    // ── 自建小米渠道（动态发现）────────────────────────────────────────
-    // 用户反馈（09-28）：开了视觉路由，往自建 `mimo` 渠道贴图仍被拒。
-    // 根因：上面的静态表只认**平台内置渠道名**（xiaomi*），而自建渠道
-    //（如 `mimo`，baseURL 指向 token-plan-cn.xiaomimimo.com）不在表内，
-    // 它的 `mimo-v2.6-flash` 也就拿不到 image 声明。
-    //
-    // ✅ 纳入条件与「是不是 MiMo」的判定**同源**：baseURL 是 xiaomimimo.com
-    //    域名（isMiMoBaseURL）—— 按地址，不按渠道名。这样自建网关叫什么
-    //    名字都行，但**别家的网关不会被误纳**。
-    //
-    // 模型归类（按官方资料）：
-    //   · v2.5（非 pro）→ 多模态：官方 catalog 对内置渠道本就声明 image
-    //   · v2.6 系列     → 多模态：官方文档称"全模态"，且有图片理解章节
-    //                     ⚠ dsh 内置目录还没有 v2.6（滞后），声明是我们补的，
-    //                     依据是官方文档而非目录 —— 文案里要说明这一点
-    //   · v2.5-pro / -ultraspeed → 纯文本（子开关管）
-    // 其余模型不动；非小米渠道（如 glm）完全不碰。
+    // 自建小米渠道的动态归类（沿用上一轮：地址判定 + id 模式 → 归入 ①/②）
     for (const [providerName, profile] of Object.entries(providers)) {
       if (!isMiMoBaseURL(profile?.baseURL)) continue;
       for (const m of Array.isArray(profile?.models) ? profile.models : []) {
         const id = String(m?.id ?? "");
         if (!/^mimo-/i.test(id)) continue;
-        // 已在静态表里的（provider/model 同名）不重复加
-        if (targets.some((t) => t.provider === providerName && t.model === id)) continue;
-        if (/-pro|-ultraspeed/i.test(id)) {
-          targets.push({ provider: providerName, model: id, textOnly: true });
-        } else {
-          targets.push({ provider: providerName, model: id, textOnly: false });
-        }
+        const k = keyOf(providerName, id);
+        if (/-pro|-ultraspeed/i.test(id)) txtKeys.add(k); else mmKeys.add(k);
       }
     }
+
+    /** 渠道级 MiMo 判定：内置渠道没有 baseURL，用 `builtinBaseURL` 兜底。 */
+    const channelIsMimo = (providerName, profile) =>
+      resolveMiMoChannel({
+        provider: providerName,
+        baseURL: profile?.baseURL ?? builtinBaseURL(providerName),
+      }).isMiMo === true;
+
+    /** 该模型是否被任一开关**管辖**（管辖之外 → 永不改动）。 */
+    const managed = (providerName, modelId, profile) => {
+      const k = keyOf(providerName, modelId);
+      return mmKeys.has(k) || txtKeys.has(k) || channelIsMimo(providerName, profile);
+    };
+    /** 该模型**现在**是否应该声明 image（三个开关取并集）。 */
+    const wantImage = (providerName, modelId, profile) => {
+      if (!enable) return false;
+      const k = keyOf(providerName, modelId);
+      if (mmKeys.has(k)) return true;
+      if (allowTextOnly && txtKeys.has(k)) return true;
+      if (allowAllMimo && channelIsMimo(providerName, profile)) return true;
+      return false;
+    };
 
     // 🔴 **绝不能把数组下标写进 path**（线上事故，09-28 修）。
     //
@@ -1851,23 +1899,22 @@ export function apply(ctx, config) {
     // 同一 provider 推多条就会互相覆盖（实测 xiaomi 被推了 2 条，
     // 后一条把前一条的结果盖掉 → 只有一个模型被改）。所以先按 provider 分组，
     // 每个 provider 只算一次、只推一条 op。
-    const byProvider = new Map();
-    for (const t of targets) {
-      if (!byProvider.has(t.provider)) byProvider.set(t.provider, []);
-      byProvider.get(t.provider).push(t);
-    }
-
     const ops = [];
-    for (const [provider, group] of byProvider) {
-      const list = providers?.[provider]?.models;
+    // 遍历**所有** provider（不再只遍历目标表）—— 管辖判定在 wantImage/managed 里，
+    // 管辖之外的模型原样保留（见上方 `managed` 的说明）。
+    for (const [provider, profile] of Object.entries(providers)) {
+      const list = profile?.models;
       if (!Array.isArray(list)) continue; // 该 provider 没配 → 不动
       let touched = false;
       const nextList = list.map((m) => {
-        const hit = group.find((t) => t.model === m?.id);
-        if (!hit) return m; // 不在目标表里 → 原样保留
+        if (!m?.id) return m;
+        // 🔴 管辖之外的模型 → 原样保留（哪怕它声明了 image）。
+        //    典型：openai-codex 的 gpt-* 本就带 image，是用户/目录声明的，
+        //    绝不能被我们当"多余的 image"回收掉。
+        if (!managed(provider, m.id, profile)) return m;
         const cur = m.input;
         const hasImage = Array.isArray(cur) && cur.includes("image");
-        const want = wantImage({ provider, model: m.id }, hit.textOnly);
+        const want = wantImage(provider, m.id, profile);
         if (want === hasImage) return m; // 无需变更
         // 保留已有其它模态（去重），按需增删 image
         const next = want
@@ -1900,12 +1947,14 @@ export function apply(ctx, config) {
     const want = mimo.visionRouting === true;
     // 文本模型只在视觉路由也开的前提下才补 image（单独开没有意义）
     const allowTextOnly = want && mimo.visionRoutingTextModels === true;
-    const { changed, error } = await deps.applyVisionRouting(want, allowTextOnly);
+    // 全量口径同样只在主开关开启时才有意义
+    const allowAllMimo = want && mimo.visionRoutingAllMimo === true;
+    const { changed, error } = await deps.applyVisionRouting(want, allowTextOnly, allowAllMimo);
     if (error) {
       ctx.logger?.warn?.(`[dsh-mimo-extension] 视觉路由同步失败：${error}`);
     } else if (changed.length) {
       ctx.logger?.info?.(
-        `[dsh-mimo-extension] 视觉路由已${want ? "开启" : "关闭"}（含文本模型：${allowTextOnly ? "是" : "否"}）：${changed.join(", ")}`,
+        `[dsh-mimo-extension] 视觉路由已${want ? "开启" : "关闭"}（文本模型：${allowTextOnly ? "是" : "否"}；全量：${allowAllMimo ? "是" : "否"}）：${changed.join(", ")}`,
       );
     }
     return { changed, error };
@@ -2142,6 +2191,7 @@ export function apply(ctx, config) {
                       hideViewWhenNotMiMo: m.hideViewWhenNotMiMo === true,
                       visionRouting: m.visionRouting === true,
                       visionRoutingTextModels: m.visionRoutingTextModels === true,
+                      visionRoutingAllMimo: m.visionRoutingAllMimo === true,
                       billingTypeOverrides: m.billingTypeOverrides ?? {},
                       pricing: m.pricing ?? {},
                       writable: Boolean(userSettings),
@@ -2173,6 +2223,7 @@ export function apply(ctx, config) {
                   if (typeof body.hideViewWhenNotMiMo === "boolean") patch.hideViewWhenNotMiMo = body.hideViewWhenNotMiMo;
                   if (typeof body.visionRouting === "boolean") patch.visionRouting = body.visionRouting;
                   if (typeof body.visionRoutingTextModels === "boolean") patch.visionRoutingTextModels = body.visionRoutingTextModels;
+                  if (typeof body.visionRoutingAllMimo === "boolean") patch.visionRoutingAllMimo = body.visionRoutingAllMimo;
                   await userSettings.update({ mimo: patch });
                   deps.clearOfficialCache?.();   // 设置已保存：官方数据作废
                   // 视觉路由是**跨命名空间写入**（改的是 llm-pi-ai 的模型声明），

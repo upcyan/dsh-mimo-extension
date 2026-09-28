@@ -356,7 +356,11 @@
       "cfg.pasteFail": "读不到剪贴板，请手动按 Ctrl+V，或右键粘贴",
       "cfg.cookieWhy": "这个 Cookie 用来读套餐（Token Plan）额度：tokenPlan/detail 与 tokenPlan/usage 两个接口都必须带它；按量计费的余额（balance）也是同一个凭据。",
     
-      "view.frameMonth": "本月",
+      "view.staleSource": "官方数据（缓存，截至 {time}）",
+            "view.authExpiredStale": "官方接口返回 401，登录已失效。下面显示的是上次成功获取的缓存数据（截至 {time}），不是实时额度。重新登录小米账号并更新 Cookie 即可恢复。",
+            "cfg.visionAllMimo": "为所有 MiMo 渠道的模型声明视觉能力",
+            "cfg.visionAllMimoHint": "判定为 MiMo 渠道（按地址，未知时按名称）上的全部模型都声明图像输入——含别名模型与未来新模型。⚠ 按名称判定不确信：非小米后端的同名模型也会被声明。主开关关闭时本项无效。",
+            "view.frameMonth": "本月",
       "view.framePeriod": "本周期",
       "view.usedPercentFrame": "{frame}已用",
       "view.remainPercentFrame": "{frame}剩余",
@@ -506,7 +510,11 @@
       "cfg.pasteFail": "Clipboard unavailable — press Ctrl+V manually or right-click paste",
       "cfg.cookieWhy": "This cookie reads your plan (Token Plan) quota: both tokenPlan/detail and tokenPlan/usage require it. The pay-as-you-go balance endpoint uses the same credential.",
     
-      "view.frameMonth": "this month",
+      "view.staleSource": "Provider data (cached, as of {time})",
+            "view.authExpiredStale": "The official API returned 401 — your sign-in has expired. The figures below are cached from the last successful fetch (as of {time}), not live quota. Sign in again and update the cookie to restore live data.",
+            "cfg.visionAllMimo": "Declare vision for all models on MiMo channels",
+            "cfg.visionAllMimoHint": "Declares image input for every model on a channel identified as MiMo (by address, falling back to name) — including aliased models and future ones. Warning: name-based matching is not certain; a same-named model on a non-Xiaomi backend would also be declared. No effect while the main switch is off.",
+            "view.frameMonth": "this month",
       "view.framePeriod": "this period",
       "view.usedPercentFrame": "Used ({frame})",
       "view.remainPercentFrame": "Left ({frame})",
@@ -547,6 +555,14 @@
      * 直接铺到界面上就是几百字符加一条长 URL。这里只保留最前面的形态描述
      * （`HTTP 401` / 超时 之类），细节留给控制台。
      */
+    /** 缓存标注用的时间：到分钟（"几天前"不够准，缓存龄是关键信息）。 */
+    function fmtTime(ts) {
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return "—";
+      const p = (x) => String(x).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+
     function shortError(raw) {
       const text = typeof raw === "string" ? raw : raw ? String(raw) : "";
       if (!text) return "未知原因";
@@ -1587,6 +1603,9 @@
       // 登录是否失效（来自 /summary 的 authExpired）；用于显示「重新登录」提示条
 
       const [authExpired, setAuthExpired] = useState(false);
+      // 数据是否为缓存快照（Cookie 过期/接口失败时，宿主用上次成功结果兜底）
+      const [stale, setStale] = useState(false);
+      const [staleAt, setStaleAt] = useState(null);
       const epochRef = useRef(0);
 
       // 当前选中的模型（与胶囊同一来源：会话投影 `modelSelection`）。
@@ -1625,6 +1644,8 @@
             if (epoch === epochRef.current) {
               setSummary(data);
               setAuthExpired(data?.authExpired === true);
+              setStale(data?.stale === true);
+              setStaleAt(data?.staleAt ?? null);
             }
           } catch (e) {
             if (epoch === epochRef.current) setError(e instanceof Error ? e.message : String(e));
@@ -2023,7 +2044,11 @@
           "div",
           { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)", marginBottom: "14px" } },
           summary?.official
-            ? t("view.official")
+            ? (summary.stale
+                ? t("view.staleSource", {
+                    time: summary.staleAt ? fmtTime(summary.staleAt) : "—",
+                  })
+                : t("view.official"))
             : summary
               ? (summary.authExpired ? t("view.localGeneric") : `${t("view.local")} · ${shortError(summary.officialError)}`)
               : "",
@@ -2057,7 +2082,12 @@
                 h(
                   "div",
                   { style: { color: "var(--dsw-alias-label-secondary, #59636e)" } },
-                  t("view.authExpiredHint"),
+                  // 有缓存 → 说明"现在显示的是缓存数据"；没缓存 → 才是本地估算
+                  stale
+                    ? t("view.authExpiredStale", {
+                        time: staleAt ? fmtTime(staleAt) : "—",
+                      })
+                    : t("view.authExpiredHint"),
                 ),
                 h(
                   "button",
@@ -2685,6 +2715,9 @@
       const [visionRouting, setVisionRouting] = useState(false);
       const [visionMsg, setVisionMsg] = useState(null);
       const [visionTextModels, setVisionTextModels] = useState(false);
+      // 第三开关：判定为 MiMo 渠道（resolveMiMoChannel：地址优先、名字兜底）上的
+      // 全部模型都声明 image —— 覆盖别名模型与未来新模型。
+      const [visionAllMimo, setVisionAllMimo] = useState(false);
       const [busy, setBusy] = useState(false);
       const [message, setMessage] = useState(null); // {kind:'ok'|'err', text}
 
@@ -2700,6 +2733,7 @@
             setHideViewWhenNotMiMo(data.hideViewWhenNotMiMo === true);
             setVisionRouting(data.visionRouting === true);
             setVisionTextModels(data.visionRoutingTextModels === true);
+            setVisionAllMimo(data.visionRoutingAllMimo === true);
           })
           .catch((error) => {
             if (alive) setMessage({ kind: "err", text: error instanceof Error ? error.message : String(error) });
@@ -2760,6 +2794,7 @@
             hideViewWhenNotMiMo,
             visionRouting,
             visionRoutingTextModels: visionTextModels,
+            visionRoutingAllMimo: visionAllMimo,
           };
           // Cookie 留空 = 不改；勾选清除 = 写空串
           if (clearCookie) payload.cookie = "";
@@ -2797,7 +2832,7 @@
         } finally {
           setBusy(false);
         }
-      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, visionTextModels, onChange]);
+      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, visionTextModels, visionAllMimo, onChange]);
 
       const labelStyle = {
         display: "block",
@@ -3208,6 +3243,46 @@
                 "span",
                 { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
                 t("cfg.visionTextModelsHint"),
+              ),
+            ),
+          ),
+          // ── 第三开关：所有 MiMo 渠道的模型（别名/未来新模型也覆盖）─────
+          // 与纯文本开关同层级、同"主开关关时禁用"的门。
+          // ⚠ 风险最高（名字兜底判定不确信），默认关 + 文案写明。
+          h(
+            "label",
+            {
+              style: {
+                fontSize: "12px",
+                display: "flex",
+                gap: "6px",
+                alignItems: "flex-start",
+                lineHeight: 1.5,
+                marginLeft: "18px",
+                cursor: visionRouting && !busy ? "pointer" : "default",
+                opacity: visionRouting ? 1 : 0.5,
+              },
+            },
+            h("input", {
+              type: "checkbox",
+              checked: visionAllMimo,
+              disabled: busy || !visionRouting,
+              onChange: (e) => {
+                setVisionAllMimo(e.currentTarget.checked);
+                setMessage(null);
+                setVisionMsg(null);
+              },
+              style: { marginTop: "2px" },
+              "data-role": "vision-all-mimo",
+            }),
+            h(
+              "span",
+              null,
+              t("cfg.visionAllMimo"),
+              h(
+                "span",
+                { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
+                t("cfg.visionAllMimoHint"),
               ),
             ),
           ),
