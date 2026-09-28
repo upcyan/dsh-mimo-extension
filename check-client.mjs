@@ -334,6 +334,84 @@ for (const scene of SCENARIOS) {
   ok(/opacity: visionRouting \? 1 : 0\.5/.test(src), "禁用态有视觉反馈");
   // 依赖数组要带上
   ok(/visionRouting, visionTextModels, onChange\]/.test(src), "依赖数组含 visionTextModels");
+  // ---------- 跨作用域引用检查（09-28 修详情页空白）----------
+  // 我上一轮把 `planUsageUnit` 只定义在 MimoPill，却在 MimoUsageView 里用了它，
+  // 详情页一渲染就 ReferenceError → **整页空白**；而当时所有静态断言全绿。
+  // 这里做作用域分析：任何"引用了只在别的顶层函数里声明的驼峰式名字"都要报。
+  // （通用短名如 i/key/label 出于误报考虑不查 —— 它们多半来自嵌套箭头函数参数。）
+  {
+    const lines = src.split("\n");
+    const matchBrace = (text, open) => {
+      let depth = 0, inStr = null, inTpl = 0, inLine = false, inBlock = false;
+      for (let i = open; i < text.length; i += 1) {
+        const c = text[i], n = text[i + 1];
+        if (inLine) { if (c === "\n") inLine = false; continue; }
+        if (inBlock) { if (c === "*" && n === "/") { inBlock = false; i += 1; } continue; }
+        if (inStr) { if (c === "\\") { i += 1; continue; } if (c === inStr) inStr = null; continue; }
+        if (inTpl > 0) { if (c === "\\") { i += 1; continue; } if (c === "`") inTpl -= 1; continue; }
+        if (c === "/" && n === "/") { inLine = true; i += 1; continue; }
+        if (c === "/" && n === "*") { inBlock = true; i += 1; continue; }
+        if (c === '"' || c === "'") { inStr = c; continue; }
+        if (c === "`") { inTpl += 1; continue; }
+        if (c === "{") depth += 1;
+        else if (c === "}") { depth -= 1; if (depth === 0) return i; }
+      }
+      return -1;
+    };
+    const funcs = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const m = /^    function (\w+)\s*\(([^)]*)\)\s*\{/.exec(lines[i]);
+      if (!m) continue;
+      const open = lines.slice(0, i).join("\n").length + lines[i].indexOf("{");
+      const end = matchBrace(src, open);
+      if (end < 0) continue;
+      funcs.push({ name: m[1], params: m[2].split(",").map((x) => x.trim().split(/[=:]/)[0].trim()).filter(Boolean),
+                   body: src.slice(open, end + 1), line: i + 1 });
+    }
+    const declsIn = (body) => {
+      const out = new Set();
+      for (const m of body.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) out.add(m[1]);
+      for (const m of body.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) out.add(m[1]);
+      for (const m of body.matchAll(/\b(?:const|let|var)\s*\{([^}]*)\}\s*=/g))
+        for (const n of m[1].split(",")) { const t = n.split(":").pop().trim().split("=")[0].trim(); if (/^[A-Za-z_$][\w$]*$/.test(t)) out.add(t); }
+      for (const m of body.matchAll(/\(([^()]*)\)\s*=>/g))
+        for (const n of m[1].split(",")) { const t = n.trim().split(/[=:]/)[0].trim(); if (/^[A-Za-z_$][\w$]*$/.test(t)) out.add(t); }
+      for (const m of body.matchAll(/([A-Za-z_$][\w$]*)\s*=>/g)) out.add(m[1]);
+      return out;
+    };
+    // 模块级 = 函数之外。把函数体挖成空白再收集（否则函数内声明会被误当模块级 → 完全漏报）
+    let outside = src;
+    for (const f of funcs) {
+      const at = src.indexOf(f.body);
+      if (at < 0) continue;
+      outside = outside.slice(0, at) + " ".repeat(f.body.length) + outside.slice(at + f.body.length);
+    }
+    const moduleLevel = declsIn(outside);
+    const withOwn = funcs.map((f) => ({ ...f, own: declsIn(f.body) }));
+    const crossRefs = [];
+    for (const f of withOwn) {
+      const others = new Set();
+      for (const g of withOwn) if (g !== f) for (const n of g.own) if (!f.own.has(n)) others.add(n);
+      const params = new Set(f.params);
+      // 剥注释与字符串（`planUsage` 只出现在注释里也被当引用 → 误报）
+      const stripped = f.body
+        .replace(/\/\*[\s\S]*?\*\//g, " ")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")
+        .replace(/`(?:\\.|[^`\\])*`/g, '""')
+        .replace(/'(?:\\.|[^'\\])*'/g, '""')
+        .replace(/"(?:\\.|[^"\\])*"/g, '""');
+      for (const m of stripped.matchAll(/(?<![.\w$])([a-z][A-Za-z0-9_$]*)\s*(?=[^\w$]*[),.;\]}:]|\s)/g)) {
+        const n = m[1];
+        if (!/[a-z][A-Z]/.test(n) || n.length < 8) continue;   // 只查驼峰式多词名
+        if (others.has(n) && !params.has(n) && !f.own.has(n) && !moduleLevel.has(n)) {
+          crossRefs.push(`${f.name}(行${f.line}) → ${n}`);
+        }
+      }
+    }
+    ok(crossRefs.length === 0,
+      `★ 无跨作用域变量引用（会致整页空白）${crossRefs.length ? `：${[...new Set(crossRefs)].join("，")}` : ""}`);
+  }
+
   for (const k of ["cfg.visionTextModels","cfg.visionTextModelsHint"]) {
     ok(src.includes(`"${k}":`), `有文案 ${k}`);
   }

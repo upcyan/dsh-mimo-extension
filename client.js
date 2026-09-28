@@ -1554,6 +1554,13 @@
       const billingType = billingTypeForSelection(summary, modelProvider);
       const planUsage = summary?.planUsage ?? null;
       const unit = planUsage?.items?.[0] ?? null;
+      // 套餐额度的计量单位（官方回 "Credits"）。
+      // 🔴 必须在**这个函数里也定义一次** —— 它与 MimoPill 里的同名常量分属
+      // 两个函数作用域，不共享。我上一轮只加在 MimoPill 里，却在详情页也用了它
+      // （下面的 used/limit 两行），结果详情页一渲染就抛
+      // `planUsageUnit is not defined` → **整页空白**。
+      // ⚠ 静态检查查不出"引用了别的作用域变量"这类错误，只有真跑渲染才会暴露。
+      const planUsageUnit = planUsage?.unit ?? "";
       const local = summary?.local ?? null;
       const price = summary?.price ?? null;
 
