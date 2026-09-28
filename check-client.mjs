@@ -729,6 +729,58 @@ for (const scene of SCENARIOS) {
   ok(zhDup.length === 0, `zh 块内无重复 key${zhDup.length ? `（${zhDup.join(",")}）` : ""}`);
   ok(enDup.length === 0, `en 块内无重复 key${enDup.length ? `（${enDup.join(",")}）` : ""}`);
 
+  // ---------- zh 块必须是中文、en 块必须是英文 ----------
+  // 🔴 为什么必须有这条：已有的检查只比对**两个块的 key 集合**，
+  //    key 一样就通过 —— 完全看不出"zh 里塞了英文值"。
+  //    我这次就踩了：替换脚本用全文件 `re.search` 匹配 key，
+  //    改 en 时命中了 zh 里的同名 key，**9 条中文被英文覆盖**。
+  //    界面表现是中文用户看到英文，而所有断言全绿。
+  //    （AGENTS.md 里记过同类坑：集合比对查不出"后者覆盖前者"。）
+  {
+    const notChinese = [];
+    for (const m of zhBlock.matchAll(/"([a-zA-Z0-9_.]+)":\s*"((?:[^"\\]|\\.)*)"/g)) {
+      const k = m[1], v = m[2];
+      // 白名单：本来就是英文/技术串的（不翻译）
+      if (!v || /^[\s\d.,%:/·—\-+()（）]*$/.test(v)) continue;
+      if (/^(Tokens|Credits|api-platform|cookie|MiMo|Token Plan|sk-|http)/i.test(v)) continue;
+      if (/^\{[a-zA-Z]+\}$/.test(v)) continue;               // 纯占位符
+      if (!/[\u4e00-\u9fff]/.test(v) && /[a-zA-Z]{4,}/.test(v)) notChinese.push(`${k}="${v.slice(0, 40)}"`);
+    }
+    ok(notChinese.length === 0,
+      `★ zh 块内均为中文（防止英文被写进中文块）${notChinese.length ? `：${notChinese.join("；")}` : ""}`);
+
+    const chineseInEn = [];
+    for (const m of enBlock.matchAll(/"([a-zA-Z0-9_.]+)":\s*"((?:[^"\\]|\\.)*)"/g)) {
+      if (/[\u4e00-\u9fff]/.test(m[2])) chineseInEn.push(`${m[1]}`);
+    }
+    ok(chineseInEn.length === 0,
+      `★ en 块内无中文${chineseInEn.length ? `：${chineseInEn.join("，")}` : ""}`);
+  }
+
+  // ---------- 文案不得含 markdown 标记（会原样显示给用户）----------
+  // 渲染走的是纯文本节点，不解析 markdown。我两次把 `**强调**` 写进 i18n，
+  // 界面上就真的显示了星号（`按**整个套餐周期**的日均推算`）。
+  // 强调改用「」，或直接不加。
+  {
+    const mdKeys = [];
+    for (const [name, blk] of [["zh", zhBlock], ["en", enBlock]]) {
+      for (const m of blk.matchAll(/"([a-zA-Z0-9_.]+)":\s*"((?:[^"\\]|\\.)*)"/g)) {
+        if (m[2].includes("**") || m[2].includes("`")) mdKeys.push(`${name}:${m[1]}`);
+      }
+    }
+    ok(mdKeys.length === 0, `★ 文案不含 markdown 标记（会原样显示）${mdKeys.length ? `：${mdKeys.join("，")}` : ""}`);
+  }
+
+  // ---------- 方位词必须与布局相符 ----------
+  // 宽屏卡片是并排的（`repeat(auto-fit, minmax(290px,1fr))`），套餐卡在模型卡**右侧**；
+  // 只有窄屏单列才在下方。所以"下面的套餐额度"在 PC 上指错位置。
+  // 跨卡片指代一律用**卡片标题**，不说方位。
+  {
+    ok(!/下面的套餐额度/.test(zhBlock), "★ 不说「下面的套餐额度」（PC 上在右侧）");
+    ok(!/下方「套餐额度」/.test(zhBlock), "★ 不说「下方套餐额度」（用卡片标题指认）");
+    ok(/t\("view\.notMimoModel"/.test(src3), "notMimoModel 仍在使用");
+  }
+
   // ⚠ 反向校验：切块必须覆盖到块的**真正结尾**。
   // 只要文案里出现 `};` 这样的字符序列（例如 `...{end}; used...`），
   // 朴素的"找第一个 };" 就会截断，把后半段 key 全报成缺失。
