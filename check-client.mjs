@@ -209,7 +209,15 @@ for (const scene of SCENARIOS) {
 
   // 点击弹卡片：显示计费类型 + 用量；卡片内有进详情页的入口
   ok(/t\("pill\.popover\.billing"\)/.test(src), "弹出卡显示计费类型");
-  ok(/t\("pill\.popover\.plan"\)/.test(src) && /t\("pill\.popover\.payg"\)/.test(src), "计费类型区分套餐/按量两种文案");
+
+  // 弹窗「已用额度」行（Credits 绝对值），仅 Token Plan
+  ok(/t\("pill\.popover\.usedAmount"\)/.test(src), "弹窗有「已用额度」行");
+  ok(/isPlan && unit\s*\n\s*\? line\(/.test(src), "★ 该行只在 Token Plan 下渲染");
+  ok(/const planUsageUnit = summary\?\.planUsage\?\.unit \?\? ""/.test(src),
+    "单位取自 planUsage.unit（官方回 Credits，不硬编码）");
+  ok(/\$\{fmtFull\(unit\.used \?\? 0\)\}/.test(src), "显示 unit.used 的绝对值");
+  ok(/\$\{planUsageUnit \? ` \$\{planUsageUnit\}` : ""\}/.test(src),
+    "单位为空时不留下多余空格");  ok(/t\("pill\.popover\.plan"\)/.test(src) && /t\("pill\.popover\.payg"\)/.test(src), "计费类型区分套餐/按量两种文案");
   ok(/t\("pill\.popover\.detail"\)/.test(src), "弹出卡保留「查看详情」入口");
   ok(/activateMimoView\(props\)/.test(src), "「查看详情」仍走原 activateMimoView");
 

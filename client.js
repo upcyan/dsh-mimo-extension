@@ -228,6 +228,7 @@
       "pill.popover.billing": "计费类型",
       "pill.popover.remain": "剩余额度",
       "pill.popover.used": "本月已用",
+      "pill.popover.usedAmount": "已用额度",
       "pill.popover.total": "套餐总量",
       "pill.popover.session": "会话 tokens",
       "pill.popover.calls": "请求次数",
@@ -345,6 +346,7 @@
       "pill.popover.billing": "Billing",
       "pill.popover.remain": "Remaining",
       "pill.popover.used": "Used this month",
+      "pill.popover.usedAmount": "Used quota",
       "pill.popover.total": "Plan total",
       "pill.popover.session": "Session tokens",
       "pill.popover.calls": "Requests",
@@ -970,6 +972,9 @@
       // 用共享判定：与实时选中的 provider 对齐（详见 billingTypeForSelection）
       const billingType = billingTypeForSelection(summary, selectedProvider);
       const unit = summary?.planUsage?.items?.[0] ?? null;
+      // 套餐额度的计量单位，官方 `tokenPlan/usage` 回 "Credits"。
+      // ⚠ 不是 tokens，也不是人民币 —— 别自己编单位，取回来直接用。
+      const planUsageUnit = summary?.planUsage?.unit ?? "";
       const remainPercent = unit ? Math.max(0, 100 - unit.percent) : null;
       const isPlan = billingType === "token-plan";
 
@@ -1092,6 +1097,15 @@
               ? line(t("pill.popover.remain"), remainPercent !== null ? `${fmtPercent(remainPercent)}%` : "—", true)
               : line(t("pill.popover.session"), fmtCompact(sessionTokens), true),
             isPlan && unit ? line(t("pill.popover.used"), `${fmtPercent(unit.percent)}%`) : null,
+            // 已用额度的**绝对值**（Credits）。上面那行是百分比，这行是实际消耗量 ——
+            // 两者一起看才知道"用了多少 / 占多少"。
+            // 单位取自 `planUsage.unit`（官方回的 "Credits"），不硬编码。
+            isPlan && unit
+              ? line(
+                  t("pill.popover.usedAmount"),
+                  `${fmtFull(unit.used ?? 0)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
+                )
+              : null,
             isPlan && unit ? line(t("pill.popover.total"), fmtFull(unit.limit ?? 0)) : null,
             // 套餐模式下也把会话的 MiMo 用量列出来 —— 否则用户看不到"这个会话消耗了多少"
             isPlan && split ? line(t("pill.popover.session"), fmtCompact(sessionTokens)) : null,
