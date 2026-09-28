@@ -837,12 +837,13 @@ if (loaded) {
     ok(/deps\.applyVisionRouting = async/.test(src), "有 applyVisionRouting 写入器");
     ok(/settingsService\.mutate\("llm-pi-ai", ops\)/.test(src),
       "走 settings.mutate 写 llm-pi-ai（路径寻址，不重写整个 provider）");
-    ok(/op: "set",\s*\n\s*path: \["providers", provider, "models", String\(idx\), "input"\]/.test(src),
-      "op 精确指向 providers.<p>.models[<i>].input");
+    ok(/ops\.push\(\{ op: "set", path: \["providers", provider, "models"\], value: nextList \}\)/.test(src),
+      "op 指向 providers.<p>.models 且值为整条数组");
     ok(/\[\.\.\.new Set\(\[\.\.\.cur, "image"\]\)\]/.test(src),
       "已开启时保留其它模态并追加 image（去重）");
     ok(/cur\.filter\(\(x\) => x !== "image"\)/.test(src), "关闭时去掉 image");
-    ok(/value: next\.length \? next : \["text"\]/.test(src), "回收后为空则补回 text（避免空数组）");
+    ok(/\? cur\.filter\(\(x\) => x !== "image"\)\s*\n\s*: \["text"\]/.test(src),
+      "回收后为空则补回 text（避免空数组）");
     // ⚠ 启动同步的位置：必须在 schemastery 判空之前
     const syncIdx = src.indexOf("deps.syncVisionRouting?.()");
     const schemaIdx = src.indexOf("const schema = buildMimoSettingsSchema(settingsCtx)");
@@ -866,6 +867,18 @@ if (loaded) {
     ok(/deps\.applyVisionRouting = async \(enable, allowTextOnly = false\)/.test(src),
       "applyVisionRouting 接受 allowTextOnly");
     // 回收精确性：两张表各自决定去留
+    // 🔴 数组路径事故回归（09-28）：平台的 applyPathOp 只认 plain object，
+    // 一旦 path 里带数组下标，整个 models 数组会被当空对象重建 →
+    // 连 id/name 都丢 → schema 校验失败 → **整个 provider 从 llm-pi-ai 消失**。
+    ok(/path: \["providers", provider, "models"\]/.test(src),
+      "★ op 的 path 停在 models（不含数组下标）");
+    ok(!/path: \["providers", provider, "models", String\(idx\)/.test(src),
+      "★ 已不再使用带数组下标的 path（那是数据损坏的根因）");
+    // 同一 provider 必须只推一条 op（整条数组替换，多条会互相覆盖）
+    ok(/const byProvider = new Map\(\)/.test(src), "★ 按 provider 聚合（避免多条 op 互相覆盖）");
+    ok(/for \(const \[provider, group\] of byProvider\)/.test(src), "按 provider 遍历生成 op");
+    // 值必须是完整数组且元素保留 id/name
+    ok(/return \{ \.\.\.m, input: next \};/.test(src), "value 里浅拷贝模型对象（保留 id/name）");
     ok(/const wantImage = \(entry, isTextOnly\) =>/.test(src),
       "每张表各自决定是否写 image（不做统一删 image 收尾）");
     ok(/isTextOnly \? allowTextOnly : true/.test(src), "文本模型只在子开关开启时才写");

@@ -1774,30 +1774,55 @@ export function apply(ctx, config) {
       ...BUILTIN_TEXT_ONLY_MODELS.map((e) => ({ ...e, textOnly: true })),
     ];
 
+    // 🔴 **绝不能把数组下标写进 path**（线上事故，09-28 修）。
+    //
+    // 平台的 `applyPathOp()` 只认 **plain object**：
+    //     const child = section[head];
+    //     if (!isPlainObject(child)) return { ...section, [head]: applyPathOp({}, …) };
+    // 而 **数组不是 plain object** → 走到 `models` 这一层时，整个数组被当成
+    // 空对象重建。实测后果：
+    //     原: models = [{id:'mimo-v2.5'}, {id:'mimo-v2.5-pro'}]
+    //     写后: models = {"0": {"input": ["text","image"]}}
+    //   → 数组降级成对象、**连 id/name 都丢了** → `llm-pi-ai` schema 期望数组，
+    //     校验失败 → **整个 provider 被丢弃**（用户模型菜单里的 MiMo-V2.5 消失，
+    //     且"视觉路由"看起来像是没保存成功）。
+    //
+    // ✅ 正确做法：**整条 models 数组替换**（path 只到 `models`，不进入数组），
+    //   把改好的新数组作为 value。这样完全不碰 applyPathOp 的数组缺陷。
+    // ⚠ **必须按 provider 聚合**：op 是"整条 models 数组替换"，
+    // 同一 provider 推多条就会互相覆盖（实测 xiaomi 被推了 2 条，
+    // 后一条把前一条的结果盖掉 → 只有一个模型被改）。所以先按 provider 分组，
+    // 每个 provider 只算一次、只推一条 op。
+    const byProvider = new Map();
+    for (const t of targets) {
+      if (!byProvider.has(t.provider)) byProvider.set(t.provider, []);
+      byProvider.get(t.provider).push(t);
+    }
+
     const ops = [];
-    for (const { provider, model, textOnly } of targets) {
+    for (const [provider, group] of byProvider) {
       const list = providers?.[provider]?.models;
       if (!Array.isArray(list)) continue; // 该 provider 没配 → 不动
-      const idx = list.findIndex((m) => m?.id === model);
-      if (idx < 0) continue; // 该模型没在这个 provider 下 → 不动
-      const cur = list[idx]?.input;
-      const hasImage = Array.isArray(cur) && cur.includes("image");
-      const want = wantImage({ provider, model }, textOnly);
-      if (want && !hasImage) {
-        // 保留已有的其它模态（去重），确保 image 在
-        const next = Array.isArray(cur) && cur.length ? [...new Set([...cur, "image"])] : ["text", "image"];
-        ops.push({ op: "set", path: ["providers", provider, "models", String(idx), "input"], value: next });
-        changed.push(`${provider}/${model}`);
-      } else if (!want && hasImage) {
-        // 回收：去掉 image；空了就补 text
-        const next = cur.filter((x) => x !== "image");
-        ops.push({
-          op: "set",
-          path: ["providers", provider, "models", String(idx), "input"],
-          value: next.length ? next : ["text"],
-        });
-        changed.push(`${provider}/${model}`);
-      }
+      let touched = false;
+      const nextList = list.map((m) => {
+        const hit = group.find((t) => t.model === m?.id);
+        if (!hit) return m; // 不在目标表里 → 原样保留
+        const cur = m.input;
+        const hasImage = Array.isArray(cur) && cur.includes("image");
+        const want = wantImage({ provider, model: m.id }, hit.textOnly);
+        if (want === hasImage) return m; // 无需变更
+        // 保留已有其它模态（去重），按需增删 image
+        const next = want
+          ? (Array.isArray(cur) && cur.length ? [...new Set([...cur, "image"])] : ["text", "image"])
+          : ((Array.isArray(cur) ? cur.filter((x) => x !== "image") : []).length
+              ? cur.filter((x) => x !== "image")
+              : ["text"]);
+        touched = true;
+        changed.push(`${provider}/${m.id}`);
+        return { ...m, input: next };
+      });
+      if (!touched) continue;
+      ops.push({ op: "set", path: ["providers", provider, "models"], value: nextList });
     }
     if (ops.length === 0) return { changed, error: "" };
     try {
