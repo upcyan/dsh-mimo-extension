@@ -334,6 +334,28 @@ for (const scene of SCENARIOS) {
   ok(/opacity: visionRouting \? 1 : 0\.5/.test(src), "禁用态有视觉反馈");
   // 依赖数组要带上
   ok(/visionRouting, visionTextModels, onChange\]/.test(src), "依赖数组含 visionTextModels");
+  // ---------- 卡片填充 + widthHandle（09-28 用户反馈）----------
+  {
+    // ① 卡片必须能"撑满"：grid 行高由同行最高卡片决定，
+    //    卡片不是 flex 纵向容器的话，子块无法认领剩余高度 → 底部留白。
+    ok(/function Card\(\{ title, children \}\)/.test(src), "有 Card 组件");
+    const cardSeg = src.slice(src.indexOf("function Card("), src.indexOf("function Stat("));
+    ok(/flexDirection: "column"/.test(cardSeg), "★ Card 是 flex 纵向容器（子块才能 flex:1 撑满）");
+    // ② 柱状图高度自适应（不能再写死像素）
+    ok(/flex: "1 1 auto",\s*\n\s*minHeight: narrow \? "46px" : "60px"/.test(src),
+      "柱状图容器 flex:1 认领剩余高度 + 最小高度兜底");
+    ok(/Math\.round\(\(d\.tokens \/ maxDay\) \* 100\)/.test(src),
+      "★ 柱高用百分比（随容器自适应），不是写死像素");
+    ok(!/Math\.round\(\(d\.tokens \/ maxDay\) \* \(narrow \? 40 : 54\)\)/.test(src),
+      "★ 旧的写死柱高已移除");
+    ok(/minHeight: "3px"/.test(src), "柱子有最小高度（0 值也可见）");
+    // ③ widthHandle：根节点必须带 data-conversation-composer-overlay
+    const rootSeg = src.slice(src.indexOf("function MimoUsageView("), src.indexOf("function MimoSettingsForm("));
+    ok(/"data-conversation-composer-overlay": ""/.test(rootSeg),
+      "★ 视图根带 data-conversation-composer-overlay（否则平台显示拖拽手柄）");
+    ok(/maxWidth: "1100px"/.test(rootSeg), "保留可读宽度上限");
+  }
+
   // ---------- 跨作用域引用检查（09-28 修详情页空白）----------
   // 我上一轮把 `planUsageUnit` 只定义在 MimoPill，却在 MimoUsageView 里用了它，
   // 详情页一渲染就 ReferenceError → **整页空白**；而当时所有静态断言全绿。

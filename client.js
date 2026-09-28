@@ -1411,6 +1411,13 @@
             borderRadius: "12px",
             padding: "16px",
             minWidth: 0,
+            // ── 让卡片内容能"撑满"卡片高度 ──────────────────────────────
+            // 网格行高由**同行最高的卡片**决定（`align-items` 默认 stretch），
+            // 所以「用量统计（本地）」总是被旁边更高的卡片拉高。
+            // 卡片自己必须是 flex 纵向容器，子块才能用 flex:1 认领剩余空间；
+            // 否则内容按自然高度堆在上面，底部留一大片空白。
+            display: "flex",
+            flexDirection: "column",
           },
         },
         title
@@ -1747,6 +1754,16 @@
           //
           // ⚠ 别在这里加 `overflow:auto`：那会多出一个内层滚动条，出现"双滚动"，
           //    与官方视图的观感不一致（我第一版就这么写错了）。
+          //
+          // 🔴 `data-conversation-composer-overlay` 不能少（09-28 用户反馈
+          //    "我们这页有 widthHandle、轨迹页没有"）：
+          //    平台的会话外壳里有这条规则 ——
+          //      .root:has([data-conversation-composer-overlay]) .widthHandle { display:none }
+          //    chat 与 trajectory 两个官方视图的根节点**都带这个属性**，所以它们
+          //    两侧不出现拖拽手柄；我们没带，于是 `cursor:col-resize` 的手柄压在我们的
+          //    内容上（我们的 maxWidth 比手柄所在的位置更宽）。
+          //    ⚠ 这是平台约定的"视图自带底部 composer 占位"标记，不是可有可无的装饰。
+          "data-conversation-composer-overlay": "",
           style: {
             // 撑满平台给的 flex 容器，并允许在空间不足时收缩
             flex: "1 0 auto",
@@ -2264,7 +2281,9 @@
             local?.ok
               ? h(
                   "div",
-                  { style: { display: "flex", flexDirection: "column", gap: "10px" } },
+                  // flex:1 + minHeight:0：认领卡片里除标题外的全部剩余高度，
+                  // 好让下面的柱状图把空白吃掉（而不是堆在顶部、底部留一片空）。
+                  { style: { display: "flex", flexDirection: "column", gap: "10px", flex: "1 1 auto", minHeight: 0 } },
                   h(
                     Row,
                     null,
@@ -2279,8 +2298,13 @@
                             display: "flex",
                             gap: narrow ? "2px" : "4px",
                             alignItems: "flex-end",
-                            // 窄屏降低柱高，避免占满一屏
-                            height: narrow ? "46px" : "60px",
+                            // ── 柱状图自适应卡片高度 ──────────────────────
+                            // 原先写死 `height: 60px`、柱高按 54px 折算，于是卡片被
+                            // 旁边更高的卡片拉高时，下方就空出一块。
+                            // 现在：容器 flex:1 认领剩余高度（并给一个最小高度兜底），
+                            // 柱高用**百分比**表示（相对容器），于是柱子随卡片长高。
+                            flex: "1 1 auto",
+                            minHeight: narrow ? "46px" : "60px",
                             overflowX: narrow ? "auto" : undefined,
                           },
                         },
@@ -2291,7 +2315,11 @@
                             style: {
                               width: narrow ? "10px" : "15px",
                               flex: narrow ? "none" : undefined,
-                              height: `${Math.max(4, Math.round((d.tokens / maxDay) * (narrow ? 40 : 54)))}px`,
+                              // 百分比高度：随容器（=卡片剩余空间）自适应。
+                              // 用 minHeight 保证极小值仍可见（0 值也有一根短线）。
+                              height: `${Math.max(4, Math.round((d.tokens / maxDay) * 100))}%`,
+                              minHeight: "3px",
+                              maxHeight: "100%",
                               background: "var(--dsw-alias-state-business-primary, #0969da)",
                               borderRadius: "3px",
                               opacity: 0.85,
@@ -2307,6 +2335,8 @@
                           style: {
                             borderTop: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))",
                             paddingTop: "10px",
+                            // 预测区固定在底部：让上面的柱状图（flex:1）独占剩余空间
+                            flex: "none",
                             display: "flex",
                             flexDirection: "column",
                             gap: "6px",
