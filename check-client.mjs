@@ -217,7 +217,17 @@ for (const scene of SCENARIOS) {
     "单位取自 planUsage.unit（官方回 Credits，不硬编码）");
   ok(/\$\{fmtFull\(unit\.used \?\? 0\)\}/.test(src), "显示 unit.used 的绝对值");
   ok(/\$\{planUsageUnit \? ` \$\{planUsageUnit\}` : ""\}/.test(src),
-    "单位为空时不留下多余空格");  ok(/t\("pill\.popover\.plan"\)/.test(src) && /t\("pill\.popover\.payg"\)/.test(src), "计费类型区分套餐/按量两种文案");
+    "单位为空时不留下多余空格");
+  // 🔴 单位必须跟在**每个**数量后面，不能只给一个 ——
+  // 用户反馈："已用额度加了单位，套餐总量怎么不加单位"。
+  // 更早的详情页还有第三种毛病：单位单独挂一个 span 在行尾，
+  // 读者分不清它修饰的是「已用」还是「总量」。
+  {
+    const unitCount = (src.match(/\$\{planUsageUnit \? ` \$\{planUsageUnit\}` : ""\}/g) || []).length;
+    ok(unitCount === 4, `4 处套餐数量都带单位（弹窗 used/limit + 详情页 used/limit，实为 ${unitCount}）`);
+    ok(!/planUsage\?\.unit \? h\("span"/.test(src),
+      "★ 没有孤立挂在行尾的单位 span（那种写法有歧义）");
+  }  ok(/t\("pill\.popover\.plan"\)/.test(src) && /t\("pill\.popover\.payg"\)/.test(src), "计费类型区分套餐/按量两种文案");
   ok(/t\("pill\.popover\.detail"\)/.test(src), "弹出卡保留「查看详情」入口");
   ok(/activateMimoView\(props\)/.test(src), "「查看详情」仍走原 activateMimoView");
 

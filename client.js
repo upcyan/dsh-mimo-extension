@@ -1106,7 +1106,12 @@
                   `${fmtFull(unit.used ?? 0)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
                 )
               : null,
-            isPlan && unit ? line(t("pill.popover.total"), fmtFull(unit.limit ?? 0)) : null,
+            isPlan && unit
+              ? line(
+                  t("pill.popover.total"),
+                  `${fmtFull(unit.limit ?? 0)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
+                )
+              : null,
             // 套餐模式下也把会话的 MiMo 用量列出来 —— 否则用户看不到"这个会话消耗了多少"
             isPlan && split ? line(t("pill.popover.session"), fmtCompact(sessionTokens)) : null,
             summary && !isPlan && split ? line(t("pill.popover.calls"), String(split.mimo.calls)) : null,
@@ -1821,9 +1826,18 @@
                         flexWrap: "wrap",
                       },
                     },
-                    h("span", null, `${t("view.used")}：${fmtFull(unit.used)}`),
-                    h("span", null, `${t("view.limit")}：${fmtFull(unit.limit)}`),
-                    planUsage?.unit ? h("span", { style: { opacity: 0.75 } }, planUsage.unit) : null,
+                    // 单位跟在各自数字后面，不要单独挂一个 span 在行尾 ——
+                    // 那样读者分不清它修饰的是「已用」还是「总量」。
+                    h(
+                      "span",
+                      null,
+                      `${t("view.used")}：${fmtFull(unit.used)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
+                    ),
+                    h(
+                      "span",
+                      null,
+                      `${t("view.limit")}：${fmtFull(unit.limit)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
+                    ),
                     unit.label ? h("span", null, unit.label) : null,
                     summary?.plan?.planCode ? h("span", null, `${t("view.planCode")}：${summary.plan.planCode}`) : null,
                     summary?.plan?.periodEnd ? h("span", null, `${t("view.periodEnd")}：${summary.plan.periodEnd}`) : null,
