@@ -227,8 +227,7 @@
       "pill.popover.title": "MiMo 额度",
       "pill.popover.billing": "计费类型",
       "pill.popover.remain": "剩余额度",
-      "pill.popover.used": "本月已用",
-      "pill.popover.usedAmount": "已用额度",
+            "pill.popover.usedAmount": "已用额度",
       "pill.popover.total": "套餐总量",
       "pill.popover.session": "会话 tokens",
       "pill.popover.calls": "请求次数",
@@ -254,8 +253,7 @@
       "view.periodEnd": "周期至",
       "view.expired": "已过期",
       "view.balanceNote": "Token Plan 套餐与按量付费余额互不通用，套餐用户的按量余额恒为 0，属正常。",
-      "view.usedPercent": "本月已用",
-      "view.remainPercent": "剩余",
+            "view.remainPercent": "剩余",
       "view.used": "已用",
       "view.limit": "总量",
       "view.balance": "账户余额",
@@ -357,6 +355,14 @@
       "cfg.pasteDone": "已从剪贴板填入（记得点保存）",
       "cfg.pasteFail": "读不到剪贴板，请手动按 Ctrl+V，或右键粘贴",
       "cfg.cookieWhy": "这个 Cookie 用来读套餐（Token Plan）额度：tokenPlan/detail 与 tokenPlan/usage 两个接口都必须带它；按量计费的余额（balance）也是同一个凭据。",
+    
+      "view.frameMonth": "本月",
+      "view.framePeriod": "本周期",
+      "view.usedPercentFrame": "{frame}已用",
+      "view.remainPercentFrame": "{frame}剩余",
+      "view.quotaYearlyLabel": "套餐额度（年度）",
+      "view.yearlyNote": "年度套餐：额度在整个周期内共用，没有月度上限。",
+      "pill.popover.usedFrame": "{frame}已用",
     };
     const en = {
       "pill.label": "MiMo quota",
@@ -371,8 +377,7 @@
       "pill.popover.title": "MiMo quota",
       "pill.popover.billing": "Billing",
       "pill.popover.remain": "Remaining",
-      "pill.popover.used": "Used this month",
-      "pill.popover.usedAmount": "Used quota",
+            "pill.popover.usedAmount": "Used quota",
       "pill.popover.total": "Plan total",
       "pill.popover.session": "Session tokens",
       "pill.popover.calls": "Requests",
@@ -398,7 +403,6 @@
       "view.periodEnd": "Period ends",
       "view.expired": "expired",
       "view.balanceNote": "Token Plan quotas and pay-as-you-go balance are not interchangeable, so a subscription account shows a 0 balance here — this is expected.",
-      "view.usedPercent": "Used this month",
       "view.remainPercent": "Remaining",
       "view.used": "Used",
       "view.limit": "Limit",
@@ -501,6 +505,14 @@
       "cfg.pasteDone": "Filled from clipboard (remember to Save)",
       "cfg.pasteFail": "Clipboard unavailable — press Ctrl+V manually or right-click paste",
       "cfg.cookieWhy": "This cookie reads your plan (Token Plan) quota: both tokenPlan/detail and tokenPlan/usage require it. The pay-as-you-go balance endpoint uses the same credential.",
+    
+      "view.frameMonth": "this month",
+      "view.framePeriod": "this period",
+      "view.usedPercentFrame": "Used ({frame})",
+      "view.remainPercentFrame": "Left ({frame})",
+      "view.quotaYearlyLabel": "Plan quota (yearly)",
+      "view.yearlyNote": "Yearly plan: the quota is shared across the whole period — there is no monthly cap.",
+      "pill.popover.usedFrame": "Used ({frame})",
     };
 
     // 由 apply 注入的本地化函数；未注册时退化为按浏览器语言直查
@@ -1043,6 +1055,9 @@
       const planUsageUnit = summary?.planUsage?.unit ?? "";
       const remainPercent = unit ? Math.max(0, 100 - unit.percent) : null;
       const isPlan = billingType === "token-plan";
+      // 周期口径（与详情页一致）：年付无月度子限额，额度整期共用
+      const isYearlyPlan = /year|annual/i.test(String(summary?.plan?.planCode ?? ""));
+      const quotaFrame = isYearlyPlan ? t("view.framePeriod") : t("view.frameMonth");
 
       // ⚠ 只算**MiMo 归属**的会话用量：一个会话可能换过模型，
       // 把别的渠道算进来会虚高（实测有会话 138.8M 里 89.1M 是 codebuddy）。
@@ -1162,7 +1177,9 @@
             isPlan
               ? line(t("pill.popover.remain"), remainPercent !== null ? `${fmtPercent(remainPercent)}%` : "—", true)
               : line(t("pill.popover.session"), fmtCompact(sessionTokens), true),
-            isPlan && unit ? line(t("pill.popover.used"), `${fmtPercent(unit.percent)}%`) : null,
+            isPlan && unit
+              ? line(t("pill.popover.usedFrame", { frame: quotaFrame }), `${fmtPercent(unit.percent)}%`)
+              : null,
             // 已用额度的**绝对值**（Credits）。上面那行是百分比，这行是实际消耗量 ——
             // 两者一起看才知道"用了多少 / 占多少"。
             // 单位取自 `planUsage.unit`（官方回的 "Credits"），不硬编码。
@@ -1311,6 +1328,37 @@
      */
     const MI_LOGO_FILL = "#ff6900";
 
+    /**
+     * 详情页的字号阶梯 —— **按语义角色定字号，不要随手写 px**。
+     *
+     * 之前 26 处 `fontSize` 散成 8 种取值，其中 `11px` 一个人扛了 6 种角色
+     * （Stat 标签、脚注、表格单元格、图例…），于是同级内容字号不同、
+     * 不同级内容字号相同，用户看不出层级。
+     *
+     * 平台没有导出字号 token（`dsh-web-frontend` 里没有 `--dsw-*font*` 变量，
+     * 官方视图也是直接写 px：chat 用 14/12/11，trajectory 用 12/10/18），
+     * 所以这里自建一套，取值贴近官方视图的习惯。
+     *
+     * ⚠ 新增文案时**从这里面挑**，别再写字面量。想加档位先问：
+     *    它是标题、正文、标签还是脚注？归到已有档位里去。
+     */
+    const FS = {
+      /** 卡片标题（Card 的 H3）。 */
+      title: "14px",
+      /** 页面主标题。 */
+      pageTitle: "17px",
+      /** KPI 数值（Stat 的 value）—— 全页最大，锚定视觉重心。 */
+      kpi: "17px",
+      /** 紧凑数字强调：弹窗里的数值行、卡片内的百分比。比正文大半档。 */
+      kpiSm: "13px",
+      /** 正文：表格单元格、列表项、弹窗行。 */
+      body: "12px",
+      /** 字段标签（Stat 的 label）、按钮、次级说明。 */
+      label: "11px",
+      /** 脚注 / 免责说明：最次级，只用于"仅供参考"这类附注。 */
+      note: "10.5px",
+    };
+
     /** mi logo 尺寸。 */
     function MiLogo({ size = RING_LOGO_SIZE }) {
       return h(
@@ -1438,7 +1486,7 @@
               {
                 style: {
                   margin: "0 0 10px",
-                  fontSize: "12px",
+                  fontSize: FS.title,
                   fontWeight: 600,
                   color: "var(--dsw-alias-label-secondary, #59636e)",
                 },
@@ -1450,25 +1498,54 @@
       );
     }
 
-    function Stat({ label, value, accent }) {
+    /**
+     * 一个"标签 + 数值"的小块。
+     *
+     * `unit` 单独一个参数而不是拼进 `value`：详情页同时存在三种口径
+     * （tokens / Credits / 元），而 `Credits` 与 `tokens` **不可通约**。
+     * 单位必须每个数字都标出来 —— 但排在数字后面、字号更小、颜色更淡，
+     * 这样一眼能分清哪些能直接比大小。
+     */
+    function Stat({ label, value, unit, accent, hint }) {
       return h(
         "div",
         { style: { display: "flex", flexDirection: "column", gap: "2px", minWidth: "96px" } },
-        h("span", { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)" } }, label),
+        h("span", { style: { fontSize: FS.label, color: "var(--dsw-alias-label-tertiary, #59636e)" } }, label),
         h(
           "span",
-          {
-            style: {
-              fontSize: "17px",
-              fontWeight: 650,
-              fontVariantNumeric: "tabular-nums",
-              color: accent
-                ? "var(--dsw-alias-state-business-primary, #0969da)"
-                : "var(--dsw-alias-label-primary, #1f2328)",
+          { style: { display: "flex", alignItems: "baseline", gap: "4px", flexWrap: "wrap" } },
+          h(
+            "span",
+            {
+              style: {
+                fontSize: FS.kpi,
+                fontWeight: 650,
+                fontVariantNumeric: "tabular-nums",
+                color: accent
+                  ? "var(--dsw-alias-state-business-primary, #0969da)"
+                  : "var(--dsw-alias-label-primary, #1f2328)",
+              },
             },
-          },
-          value,
+            value,
+          ),
+          unit
+            ? h(
+                "span",
+                {
+                  style: {
+                    fontSize: FS.label,
+                    fontWeight: 500,
+                    color: "var(--dsw-alias-label-tertiary, #59636e)",
+                  },
+                },
+                unit,
+              )
+            : null,
         ),
+        // 可选补充说明（如"估算"）—— 比塞进 label 更清楚，也不挤占标签行
+        hint
+          ? h("span", { style: { fontSize: FS.note, color: "var(--dsw-alias-label-tertiary, #59636e)" } }, hint)
+          : null,
       );
     }
 
@@ -1573,6 +1650,17 @@
       const billingType = billingTypeForSelection(summary, modelProvider);
       const planUsage = summary?.planUsage ?? null;
       const unit = planUsage?.items?.[0] ?? null;
+      // ── 套餐周期口径 ──────────────────────────────────────────────
+      // 用户反馈（09-28）：年付套餐显示「本月套餐额度」是误导。
+      // 实测与文档都证实**个人版没有月度子限额**：
+      //   · 官方接口里 monthUsage.limit == usage.limit == 年度总额（492 亿）
+      //     —— 若有月度子限额，前者应是月度值；
+      //   · 文档只对**团队版**提"月度额度耗尽/等待额度重置"，个人版只说
+      //     "到期或全部 Credits 用完任一先到即停"。
+      // 所以年付时额度口径是「本周期」；只有月付才是「本月」。
+      const planCodeStr = String(summary?.plan?.planCode ?? "");
+      const isYearlyPlan = /year|annual/i.test(planCodeStr);
+      const quotaFrame = isYearlyPlan ? t("view.framePeriod") : t("view.frameMonth");
       // 套餐额度的计量单位（官方回 "Credits"）。
       // 🔴 必须在**这个函数里也定义一次** —— 它与 MimoPill 里的同名常量分属
       // 两个函数作用域，不共享。我上一轮只加在 MimoPill 里，却在详情页也用了它
@@ -2061,7 +2149,11 @@
                   h(
                     Row,
                     null,
-                    h(Stat, { label: t("view.usedPercent"), value: `${fmtPercent(unit.percent)}%`, accent: true }),
+                    h(Stat, {
+                      label: t("view.usedPercentFrame", { frame: quotaFrame }),
+                      value: `${fmtPercent(unit.percent)}%`,
+                      accent: true,
+                    }),
                     h(Stat, {
                       label: t("view.remainPercent"),
                       value: `${fmtPercent(Math.max(0, 100 - unit.percent))}%`,
@@ -2092,11 +2184,31 @@
                       null,
                       `${t("view.limit")}：${fmtFull(unit.limit)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
                     ),
-                    unit.label ? h("span", null, unit.label) : null,
+                    // host 给的 label 是「本月套餐额度」，对年付套餐不成立
+                    //（见上面的周期口径说明）—— 年付时改说「套餐额度（年度）」。
+                    unit.label
+                      ? h("span", null, isYearlyPlan ? t("view.quotaYearlyLabel") : unit.label)
+                      : null,
                     summary?.plan?.planCode ? h("span", null, `${t("view.planCode")}：${summary.plan.planCode}`) : null,
                     summary?.plan?.periodEnd ? h("span", null, `${t("view.periodEnd")}：${summary.plan.periodEnd}`) : null,
                     summary?.plan?.expired
                       ? h("span", { style: { color: "var(--dsw-alias-state-error-primary, #cf222e)" } }, t("view.expired"))
+                      : null,
+                    // 年付套餐说明（用户反馈"本月套餐额度"误导）：年付没有月度子限额，
+                    // 额度整个周期共用 —— 不说明，用户会以为每月重置。
+                    isYearlyPlan
+                      ? h(
+                          "div",
+                          {
+                            style: {
+                              marginTop: "8px",
+                              fontSize: FS.label,
+                              lineHeight: 1.6,
+                              color: "var(--dsw-alias-label-tertiary, #59636e)",
+                            },
+                          },
+                          t("view.yearlyNote"),
+                        )
                       : null,
                   ),
                 )
@@ -2112,9 +2224,13 @@
                   h(
                     Row,
                     null,
-                    h(Stat, { label: summary.balance.currency, value: summary.balance.balance, accent: true }),
-                    h(Stat, { label: t("view.cash"), value: summary.balance.cashBalance }),
-                    h(Stat, { label: t("view.gift"), value: summary.balance.giftBalance }),
+                    // 三行都是**人民币金额**：币种标在数字后（标签行留给"总额/现金/赠金"）
+                    h(Stat, { label: t("view.balance"), value: summary.balance.balance,
+                              unit: summary.balance.currency, accent: true }),
+                    h(Stat, { label: t("view.cash"), value: summary.balance.cashBalance,
+                              unit: summary.balance.currency }),
+                    h(Stat, { label: t("view.gift"), value: summary.balance.giftBalance,
+                              unit: summary.balance.currency }),
                   ),
                   // Token Plan 套餐与按量余额互不通用：套餐用户的余额恒为 0，属正常，
                   // 不说明会让用户误以为出错。
@@ -2144,11 +2260,13 @@
                   h(
                     Row,
                     null,
-                    h(Stat, { label: t("view.tokens"), value: fmtFull(sessTokens), accent: true }),
-                    h(Stat, { label: t("view.calls"), value: fmtFull(sessCalls) }),
-                    h(Stat, { label: t("view.input"), value: fmtFull(session.inputTokens) }),
-                    h(Stat, { label: t("view.output"), value: fmtFull(session.outputTokens) }),
-                    h(Stat, { label: t("view.cacheRead"), value: fmtFull(session.cacheReadTokens) }),
+                    // 这几个都是**原始 token 数**（不是 Credits），统一标 tokens，
+                    // 免得跟套餐卡的 Credits 混为一谈。
+                    h(Stat, { label: t("view.tokens"), value: fmtFull(sessTokens), unit: "tokens", accent: true }),
+                    h(Stat, { label: t("view.calls"), value: fmtFull(sessCalls), unit: t("view.callsUnit") }),
+                    h(Stat, { label: t("view.input"), value: fmtFull(session.inputTokens), unit: "tokens" }),
+                    h(Stat, { label: t("view.output"), value: fmtFull(session.outputTokens), unit: "tokens" }),
+                    h(Stat, { label: t("view.cacheRead"), value: fmtFull(session.cacheReadTokens), unit: "tokens" }),
                   ),
                   // ⚠ 本会话**完全没用过 MiMo** 时：上面的数字全是 0，如果不解释，
                   //   用户会以为插件坏了 / 数据没读到。明确告知"这是正常的"，
@@ -2388,8 +2506,8 @@
                   h(
                     Row,
                     null,
-                    h(Stat, { label: t("view.today"), value: fmtFull(local.todayTokens), accent: true }),
-                    h(Stat, { label: t("view.month"), value: fmtFull(local.monthTokens), accent: true }),
+                    h(Stat, { label: t("view.today"), value: fmtFull(local.todayTokens), unit: "tokens", accent: true }),
+                    h(Stat, { label: t("view.month"), value: fmtFull(local.monthTokens), unit: "tokens", accent: true }),
                   ),
                   days.length
                     ? h(
@@ -2460,14 +2578,20 @@
                           h(Stat, {
                             label: forecast.sampleDays > 0 ? t("view.avgDaily", { days: forecast.sampleDays }) : t("view.todayRate"),
                             value: fmtFull(forecast.avgDaily),
+                            unit: "tokens",
                           }),
-                          h(Stat, { label: t("view.projected"), value: fmtFull(forecast.projectedMonth) }),
+                          // ⚠ 这两个是 **tokens**，紧挨着的"预计月底剩余"是 **Credits** ——
+                          //    三种口径并排放，必须每个都标，否则用户会以为能直接相减。
+                          h(Stat, {
+                            label: t("view.projected"),
+                            value: fmtFull(forecast.projectedMonth),
+                            unit: "tokens",
+                          }),
                           forecast.projectedRemain !== null
                             ? h(Stat, {
                                 label: t("view.projectedRemain"),
-                                // 单位跟着一起显示：`limit`/`used` 是官方口径（Credits），
-                                // 与上面"日均/月底"的 tokens **不是同一单位**，不标会误导。
-                                value: `${fmtFull(forecast.projectedRemain)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
+                                value: fmtFull(forecast.projectedRemain),
+                                unit: planUsageUnit,
                                 accent: !forecast.overBudget,
                               })
                             : null,

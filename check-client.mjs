@@ -223,10 +223,14 @@ for (const scene of SCENARIOS) {
   // 更早的详情页还有第三种毛病：单位单独挂一个 span 在行尾，
   // 读者分不清它修饰的是「已用」还是「总量」。
   {
-    const unitCount = (src.match(/\$\{planUsageUnit \? ` \$\{planUsageUnit\}` : ""\}/g) || []).length;
-    // 5 处：弹窗 used/limit + 详情页 used/limit + 预测的「预计月底剩余」
-    // （剩余额度也是官方口径，与上面的 tokens 不同单位，必须带单位）
-    ok(unitCount === 5, `5 处套餐数量都带单位（弹窗 2 + 详情页 2 + 预测剩余 1，实为 ${unitCount}）`);
+    // 单位现在有两种承载方式：
+    //   ① 拼进 value（弹窗的行渲染）—— `${planUsageUnit ? ...}`
+    //   ② 作为 Stat 的 `unit` 参数（详情页卡片）—— 与数字分开排版
+    // 所以断言要同时认这两种，否则会误判。
+    const inlineUnits = (src.match(/\$\{planUsageUnit \? ` \$\{planUsageUnit\}` : ""\}/g) || []).length;
+    const statUnits = (src.match(/unit: planUsageUnit/g) || []).length;
+    ok(inlineUnits === 4 && statUnits >= 1,
+      `套餐数量都带单位（弹窗内联 4 处 + 详情页 unit 参数 ${statUnits} 处）`);
     ok(!/planUsage\?\.unit \? h\("span"/.test(src),
       "★ 没有孤立挂在行尾的单位 span（那种写法有歧义）");
   }  ok(/t\("pill\.popover\.plan"\)/.test(src) && /t\("pill\.popover\.payg"\)/.test(src), "计费类型区分套餐/按量两种文案");
@@ -393,6 +397,29 @@ for (const scene of SCENARIOS) {
     ok(/data-width-handle/.test(src), "★ 按平台数据属性选择手柄（不依赖哈希类名）");
     ok(/display: none !important/.test(src), "手柄用 display:none（只挡指针仍会改光标）");
     ok(/maxWidth: "1100px"/.test(rootSeg), "保留可读宽度上限");
+  }
+
+  // ---------- 套餐周期口径（09-28 用户反馈）----------
+  // 年付套餐没有月度子限额（实测 monthUsage.limit == usage.limit == 年度总额；
+  // 文档的"月度额度重置"只出现在团队版），所以标签不能写死「本月」。
+  {
+    ok(/const isYearlyPlan = \/year|annual\/i\.test/.test(src), "有年付判定 isYearlyPlan");
+    ok(/const quotaFrame = isYearlyPlan \? t\("view\.framePeriod"\) : t\("view\.frameMonth"\)/.test(src),
+      "★ 额度口径帧：年付=本周期 / 月付=本月");
+    ok(/t\("view\.usedPercentFrame", \{ frame: quotaFrame \}\)/.test(src),
+      "「已用」标签走帧口径");
+    ok(/t\("pill\.popover\.usedFrame", \{ frame: quotaFrame \}\)/.test(src),
+      "弹窗「已用」标签同样走帧口径");
+    ok(/isYearlyPlan \? t\("view\.quotaYearlyLabel"\) : unit\.label/.test(src),
+      "★ 额度明细标签：年付替换 host 给的「本月套餐额度」");
+    // 年付说明必须出现，且只在年付时出现
+    ok(/isYearlyPlan\s*\n\s*\? h\([\s\S]{0,200}view\.yearlyNote/.test(src.replace(/\n\s+/g, "\n")),
+      "年付时显示「无月度上限」说明");
+    for (const k of ["view.frameMonth","view.framePeriod","view.usedPercentFrame","view.remainPercentFrame","view.quotaYearlyLabel","view.yearlyNote","pill.popover.usedFrame"]) {
+      ok(src.includes(`"${k}":`), `有文案 ${k}`);
+    }
+    // 误导性旧文案不得回归
+    ok(!/"view\.usedPercent": "本月已用"/.test(src), "★ 旧「本月已用」写死文案已移除");
   }
 
   // ---------- 跨作用域引用检查（09-28 修详情页空白）----------
