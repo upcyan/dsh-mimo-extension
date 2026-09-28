@@ -224,7 +224,9 @@ for (const scene of SCENARIOS) {
   // 读者分不清它修饰的是「已用」还是「总量」。
   {
     const unitCount = (src.match(/\$\{planUsageUnit \? ` \$\{planUsageUnit\}` : ""\}/g) || []).length;
-    ok(unitCount === 4, `4 处套餐数量都带单位（弹窗 used/limit + 详情页 used/limit，实为 ${unitCount}）`);
+    // 5 处：弹窗 used/limit + 详情页 used/limit + 预测的「预计月底剩余」
+    // （剩余额度也是官方口径，与上面的 tokens 不同单位，必须带单位）
+    ok(unitCount === 5, `5 处套餐数量都带单位（弹窗 2 + 详情页 2 + 预测剩余 1，实为 ${unitCount}）`);
     ok(!/planUsage\?\.unit \? h\("span"/.test(src),
       "★ 没有孤立挂在行尾的单位 span（那种写法有歧义）");
   }  ok(/t\("pill\.popover\.plan"\)/.test(src) && /t\("pill\.popover\.payg"\)/.test(src), "计费类型区分套餐/按量两种文案");
@@ -334,6 +336,29 @@ for (const scene of SCENARIOS) {
   ok(/opacity: visionRouting \? 1 : 0\.5/.test(src), "禁用态有视觉反馈");
   // 依赖数组要带上
   ok(/visionRouting, visionTextModels, onChange\]/.test(src), "依赖数组含 visionTextModels");
+  // ---------- 额度耗尽预测（09-28 用户需求）----------
+  {
+    // 单位换算：limit/used 是官方口径（Credits），avgDaily/monthTokens 是 tokens
+    ok(/const unitsPerToken =/.test(src), "有换算率 unitsPerToken");
+    ok(/usedUnits \/ local\.monthTokens/.test(src), "★ 换算率 = used / monthTokens（两种模式自动兼容）");
+    // 🔴 旧写法把 Credits 与 tokens 直接相减
+    ok(!/projectedRemain: limit > 0 \? Math\.max\(0, limit - projectedMonth\)/.test(src),
+      "★ 已不再 Credits − tokens（那是 12% 偏差的根源）");
+    ok(/Math\.max\(0, limit - \(unitsPerToken > 0 \? projectedMonth \* unitsPerToken : limit\)\)/.test(src),
+      "月底剩余按同单位换算");
+    // 耗尽预测
+    ok(/daysToExhaust = leftUnits \/ dailyUnits/.test(src), "有耗尽天数计算");
+    ok(/exhausted === "expiry"/.test(src) && /t\("view.exhaustsByQuota"\)/.test(src),
+      "区分「额度耗尽」与「先到期」两种文案");
+    // ⚠ Date 溢出防线（实测踩到：天数过大 → Invalid Date → 误判）
+    ok(/MAX_SAFE_DAYS/.test(src), "★ 有 Date 溢出防线（天数为 1e8 量级时）");
+    ok(/const daysToEnd = endValid \? \(end\.getTime\(\) - now\.getTime\(\)\) \/ 86400000/.test(src),
+      "★ 判「谁先到」用天数比，不用 Date 比较（避免 Invalid Date 误判）");
+    for (const k of ["view.exhaustsByQuota","view.exhaustsByExpiry","view.exhaustsValue","view.exhaustsToday","view.exhaustsNote"]) {
+      ok(src.includes(`"${k}":`), `有文案 ${k}`);
+    }
+  }
+
   // ---------- 卡片填充 + widthHandle（09-28 用户反馈）----------
   {
     // ① 卡片必须能"撑满"：grid 行高由同行最高卡片决定，

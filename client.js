@@ -277,6 +277,11 @@
       "view.projectedRemain": "预计月底剩余",
       "view.todayRate": "今日速率（样本不足）",
       "view.thinSample": "已完成天数不足 3 天，预测仅供参考（今日未计入均值）。",
+      "view.exhaustsByQuota": "预计额度耗尽",
+      "view.exhaustsByExpiry": "预计到期（额度未用完）",
+      "view.exhaustsValue": "{date}（约 {days} 天）",
+      "view.exhaustsToday": "今天之内",
+      "view.exhaustsNote": "按近 {days} 日速度推算，仅供参考。官方规则：套餐在「到期」或「额度用完」任一先到即停止服务。",
       "view.charge": "收费估算",
       "view.chargeNote": "Token Plan 套餐内调用不额外收费，只消耗套餐配额。",
       "view.chargeEst": "会话费用（估算）",
@@ -415,6 +420,11 @@
       "view.projectedRemain": "Projected left",
       "view.todayRate": "Today's rate (thin sample)",
       "view.thinSample": "Fewer than 3 completed days: forecast is indicative only (today excluded from the average).",
+      "view.exhaustsByQuota": "Quota runs out",
+      "view.exhaustsByExpiry": "Expires first",
+      "view.exhaustsValue": "{date} (~{days}d)",
+      "view.exhaustsToday": "Today",
+      "view.exhaustsNote": "Extrapolated from the last {days} days; indicative only. Per the provider, service stops at whichever comes first: expiry or quota exhaustion.",
       "view.charge": "Charge (est.)",
       "view.chargeNote": "Token Plan calls consume quota only, with no extra charge.",
       "view.chargeEst": "Session cost (estimated)",
@@ -1584,17 +1594,72 @@
         const now = new Date();
         const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const remainingDays = Math.max(0, daysInMonth - now.getDate());
-        const projectedMonth = local.monthTokens + avgDaily * remainingDays;
         const limit = unit?.limit ?? 0;
+        const usedUnits = unit?.used ?? 0;
+
+        // ── 单位口径（关键，别混用）────────────────────────────────────
+        // `limit` / `used` 的单位是**官方口径**：
+        //   · 官方模式 → "Credits"（按模型倍率折算：缓存 2 / 未命中 100 / 输出 200）
+        //   · 本地估算模式 → "tokens"（issued == monthTokens）
+        // 而 `avgDaily` / `monthTokens` 是**原始 token 数**，两者**不能直接相减**。
+        // 实测（09-28，official=true）：
+        //   used 7,654,674,811 Credits vs monthTokens 1,997,917,904 tokens → 比值 3.83
+        // 早期版本直接 `limit - projectedMonth`（Credits − tokens）→ 偏差 49 亿（约 12%）。
+        //
+        // ✅ 换算率 = used / monthTokens，即"每 token 折多少额度单位"。
+        //    本地模式下 used 就等于 monthTokens → 恒为 1，**两种模式自动兼容**。
+        const unitsPerToken =
+          local.monthTokens > 0 && usedUnits > 0 ? usedUnits / local.monthTokens : 0;
+        const projectedMonth = local.monthTokens + avgDaily * remainingDays;
+
+        // ── 额度耗尽预测 ───────────────────────────────────────────────
+        // 官方规则（mimo.mi.com 文档）："套餐在**到期**或**全部 Credits 用完**
+        // 任一条件满足时，即停止服务"。所以"还能用多久"= min(额度耗尽, 套餐到期)。
+        let daysToExhaust = null;
+        let exhaustDate = null;
+        let exhausted = null; // 'units' | 'expiry' | null —— 谁先到
+        if (limit > 0 && usedUnits > 0 && unitsPerToken > 0) {
+          const dailyUnits = avgDaily * unitsPerToken;
+          const leftUnits = Math.max(0, limit - usedUnits);
+          if (dailyUnits > 0) daysToExhaust = leftUnits / dailyUnits;
+          // ⚠ 算 exhaustDate 前必须挡住超出 Date 范围的天数：
+          //   `new Date(t + days*86400000)` 超过 ±8.64e15 ms 会得到 Invalid Date。
+          //   实测踩到：额度充裕时 daysToExhaust ≈ 1e8 天 → Invalid Date，
+          //   于是下面的 `end < Invalid Date` 恒为 false → 误判成"额度先耗尽"。
+          //   用 MAX_SAFE_DAYS 兜住（约 1 亿天已远超任何套餐周期）。
+          const MAX_SAFE_DAYS = 1e8;
+          if (daysToExhaust !== null) {
+            const d = new Date(now.getTime() + Math.min(daysToExhaust, MAX_SAFE_DAYS) * 86400000);
+            exhaustDate = Number.isNaN(d.getTime()) ? null : d;
+          }
+          // 套餐到期时间（periodEnd 是 "YYYY-MM-DD HH:mm:ss"）
+          const end = summary?.plan?.periodEnd ? new Date(String(summary.plan.periodEnd).replace(" ", "T")) : null;
+          const endValid = end && !Number.isNaN(end.getTime());
+          // 判"谁先到"用**天数**比，别用 Date 比较 —— 上面那个溢出就是教训。
+          const daysToEnd = endValid ? (end.getTime() - now.getTime()) / 86400000 : null;
+          exhausted = daysToEnd !== null && daysToExhaust !== null && daysToEnd < daysToExhaust
+            ? "expiry"
+            : "units";
+        }
+
         return {
           avgDaily,
           sampleDays,
           thinSample: sampleDays < 3,
           projectedMonth,
-          projectedRemain: limit > 0 ? Math.max(0, limit - projectedMonth) : null,
-          overBudget: limit > 0 && projectedMonth > limit,
+          // 预测月底剩余：**换算成同一单位后再算**
+          projectedRemain: limit > 0
+            ? Math.max(0, limit - (unitsPerToken > 0 ? projectedMonth * unitsPerToken : limit))
+            : null,
+          overBudget: limit > 0 && unitsPerToken > 0 && projectedMonth * unitsPerToken > limit,
+          // 额度耗尽预测（新增）
+          unitsPerToken,
+          daysToExhaust,
+          exhaustDate,
+          exhausted,            // 'units'（先用完）| 'expiry'（先到期）
+          leftUnits: limit > 0 ? Math.max(0, limit - usedUnits) : null,
         };
-      }, [local, unit]);
+      }, [local, unit, summary]);
 
       // 会话用量按渠道归属拆分（详见 splitSessionByProvider 的说明）
       const sessionSplit = useMemo(() => splitSessionByProvider(session), [session]);
@@ -2364,8 +2429,30 @@
                           forecast.projectedRemain !== null
                             ? h(Stat, {
                                 label: t("view.projectedRemain"),
-                                value: fmtFull(forecast.projectedRemain),
+                                // 单位跟着一起显示：`limit`/`used` 是官方口径（Credits），
+                                // 与上面"日均/月底"的 tokens **不是同一单位**，不标会误导。
+                                value: `${fmtFull(forecast.projectedRemain)}${planUsageUnit ? ` ${planUsageUnit}` : ""}`,
                                 accent: !forecast.overBudget,
+                              })
+                            : null,
+                          // ── 预计何时耗尽额度（新增）─────────────────────────
+                          // 官方规则："套餐在到期或全部 Credits 用完任一条件满足时即停止服务"，
+                          // 所以这里给出的是**两者中先到的那个**，并说明是哪一个。
+                          forecast.daysToExhaust !== null
+                            ? h(Stat, {
+                                label:
+                                  forecast.exhausted === "expiry"
+                                    ? t("view.exhaustsByExpiry")
+                                    : t("view.exhaustsByQuota"),
+                                value: forecast.daysToExhaust < 1
+                                  ? t("view.exhaustsToday")
+                                  : t("view.exhaustsValue", {
+                                      date: forecast.exhaustDate
+                                        ? `${forecast.exhaustDate.getMonth() + 1}/${forecast.exhaustDate.getDate()}`
+                                        : "—",
+                                      days: Math.floor(forecast.daysToExhaust),
+                                    }),
+                                accent: forecast.daysToExhaust > 30,
                               })
                             : null,
                         ),
@@ -2374,6 +2461,17 @@
                               "div",
                               { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
                               t("view.thinSample"),
+                            )
+                          : null,
+                        // 耗尽预测的说明：讲清"到期或额度用完、先到即停"这条官方规则，
+                        // 并说明推算依据 —— 否则用户会误以为这是官方给出的日期。
+                        forecast.daysToExhaust !== null
+                          ? h(
+                              "div",
+                              { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
+                              t("view.exhaustsNote", {
+                                days: forecast.sampleDays > 0 ? forecast.sampleDays : 1,
+                              }),
                             )
                           : null,
                       )
