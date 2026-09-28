@@ -330,6 +330,28 @@ for (const scene of SCENARIOS) {
   ok(/if \(wantShown === viewRegistered\) return;/.test(src), "状态未变时不重复注销/注册（防闪烁）");
   ok(/label: \(\) => t\("view\.label"\)/.test(src), "注册时仍带 label（tab 文字来源）");
   // 探针：apply 层拿不到 useProjection，必须靠组件回传
+  // ---------- 视图根容器必须对齐平台的 flex 语义 ----------
+  // 用户反馈"详情页展示方式和轨迹页不一样"。
+  // 平台把 view 挂在 `.viewArea`（flex 纵向容器）里：
+  //   .viewArea                       { flex-direction:column; flex:1; min-height:0; display:flex }
+  //   .root[data-phase=active] .viewArea { flex:1 0 auto; min-height:auto }   ← 通常态
+  // 滚动由外层 `.scrollBody`（flex:1; overflow-y:auto）负责。
+  // 轨迹页的根（views.ledger）写了 `flex:1; min-width:0; min-height:0; display:flex`
+  // 才撑满；我们原先什么都没写 → 按内容收缩，观感与官方视图不一致。
+  {
+    const st = src.indexOf('function MimoUsageView');
+    const en = src.indexOf('function MimoSettingsForm', st);
+    const body = src.slice(st, en);
+    ok(/flex: "1 0 auto"/.test(body), "★ 视图根声明 flex:1 0 auto（对齐 viewArea 通常态）");
+    ok(/minHeight: 0/.test(body), "★ 视图根声明 min-height:0（允许在 flex 容器里收缩）");
+    ok(/minWidth: 0/.test(body), "视图根声明 min-width:0");
+    ok(/flexDirection: "column"/.test(body), "视图根是纵向 flex 容器");
+    // ⚠ 不要自己滚：滚动归平台的 scrollBody，否则出现双滚动条
+    ok(!/overflowY: "auto"[\s\S]{0,120}maxWidth: "1100px"/.test(body),
+      "★ 视图根不自己加 overflow-y:auto（避免双滚动，与官方视图一致）");
+    ok(/maxWidth: "1100px"/.test(body), "保留可读宽度上限");
+  }
+
   ok(/const ModelProbe = \(props\) =>/.test(src), "有 ModelProbe 探针组件");
   ok(/conversation\.composer\.dock[\s\S]{0,400}?mimo-extension-probe/.test(src),
     "探针挂在常驻槽位 composer.dock");

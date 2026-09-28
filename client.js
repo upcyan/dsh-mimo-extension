@@ -1642,10 +1642,36 @@
       return h(
         "div",
         {
+          // ── 根容器：必须与平台 `viewArea` 的 flex 语义对齐 ──────────────
+          //
+          // 平台把 view 挂在 `.viewArea` 里，那是个 **flex 纵向容器**：
+          //     .viewArea { flex-direction: column; flex: 1; min-height: 0; display: flex }
+          // 而**滚动由外层 `.scrollBody` 负责**（`flex:1; overflow-y:auto`）。
+          //
+          // ⚠ 根元素若不声明 `flex:1`/`min-height:0`，作为 flex item 会**按内容
+          // 高度收缩**；而 `.viewArea` 又带 `overflow:hidden` ⇒ 内容一长就被**裁掉**。
+          // 这正是"和轨迹页展示不一样"的根因。
+          //
+          // ✅ 对齐轨迹页的根（`views.ledger`：
+          //    `flex:1; min-width:0; min-height:0; display:flex`）：
+          //    **撑满 + 允许被压缩**，但**不自己滚** ——
+          //    滚动由平台的 `.scrollBody`（`flex:1; overflow-y:auto`）负责，
+          //    这也是 chat / 轨迹两个官方视图的共同行为。
+          //
+          // ⚠ 别在这里加 `overflow:auto`：那会多出一个内层滚动条，出现"双滚动"，
+          //    与官方视图的观感不一致（我第一版就这么写错了）。
           style: {
+            // 撑满平台给的 flex 容器，并允许在空间不足时收缩
+            flex: "1 0 auto",
+            minHeight: 0,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
             // 窄屏收窄内边距，把宽度让给内容
             padding: narrow ? "12px 12px 96px" : "16px 22px 40px",
+            // 可读宽度：与平台其它视图一致（列方向 flex 里 `margin:0 auto` 会水平居中）
             maxWidth: "1100px",
+            margin: "0 auto",
             fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
             fontSize: narrow ? "12px" : "13px",
             color: "var(--dsw-alias-label-primary, #1f2328)",
