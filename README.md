@@ -23,13 +23,10 @@ dsh plugin --profile web add dsh-mimo-extension
 ## 安装
 
 ```sh
-# npm
-dsh plugin --profile web add dsh-mimo-extension
-
-# GitHub
+# 从 GitHub 装
 dsh plugin --profile web add github:upcyan/dsh-mimo-extension
 
-# Release 里的预构建包
+# 或装 Release 里的预构建包
 dsh plugin --profile web add \
   https://github.com/upcyan/dsh-mimo-extension/releases/latest/download/dsh-mimo-extension.tgz
 ```
@@ -333,7 +330,7 @@ curl -s "<dsh 地址>/dsh-mimo-extension/summary" \
 
 ## 从 dsh-mimo-usage 升级
 
-插件原名 `dsh-mimo-usage`，2026-09-27 改名为 `dsh-mimo-extension`，仓库和 npm 包名同步改了。
+插件原名 `dsh-mimo-usage`，2026-09-27 改名为 `dsh-mimo-extension`，仓库和包名同步改了。
 
 配置不用手工搬。启动时会自动把旧命名空间 `dsh-mimo-usage` 里的用户配置（含 Cookie、套餐总量、胶囊位置、各开关）迁移到 `dsh-mimo-extension` 段。迁移单向、幂等（新段已有配置就不覆盖），且**不删除旧段**，留作回滚依据，确认无误后可自行清理。
 
