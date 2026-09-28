@@ -815,6 +815,29 @@ if (loaded) {
     ok(!/unset.*LEGACY_SETTINGS_NS|delete.*legacy/i.test(src), "不删除旧段（留作回滚依据）");
   }
 
+  // ---------- 登录失效识别 + Cookie 校验端点（09-28 加）----------
+  {
+    const src = readFileSync(join(here, "host.js"), "utf8");
+    // fetchJson 必须带状态码：判断 401 不能靠正则匹配错误串
+    ok(/status: res\.status,/.test(src), "fetchJson 失败时带上 HTTP 状态码");
+    ok(/function isUnauthorized\(v\)/.test(src), "有 isUnauthorized 判定");
+    ok(/v\.status === 401/.test(src), "★ 以状态码 401 判定登录失效（不匹配错误文案）");
+    ok(/function msgOf\(v\)/.test(src), "有 msgOf 兼容旧字符串形态");
+    // authExpired 贯穿
+    ok(/authExpired: false,/.test(src), "结果结构里有 authExpired");
+    ok(/result\.authExpired = official\.authExpired === true/.test(src), "authExpired 传进 summary");
+    ok(/value\.authExpired =/.test(src), "官方失败时按 401 置位");
+    // 校验端点
+    ok(/ROUTE_PREFIX \+ "\/validate-cookie"/.test(src), "新增 /validate-cookie 端点");
+    ok(/if \(req\.method !== "POST"\)/.test(src), "该端点只接受 POST");
+    ok(/const valid = okB \|\| okD \|\| okU;/.test(src), "有效判据：任一官方接口可用");
+    // ⚠ 校验不得落盘、不得回传凭据
+    const seg = src.slice(src.indexOf("validate-cookie"), src.indexOf("validate-cookie") + 2200);
+    ok(!/patch\.cookie/.test(seg) && !/userSettings\.update/.test(seg),
+      "★ 校验不写设置（只验不存）");
+    ok(!/cookie: candidate,/.test(seg), "★ 不回传凭据本身");
+  }
+
   // ---------- 视觉路由（09-27 加）----------
   // 用户需求：在详情页加开关，启用 MiMo 的视觉路由。
   // 平台按 `inputModalities` 硬拦截图片附件（MODEL_DOES_NOT_SUPPORT_IMAGES），

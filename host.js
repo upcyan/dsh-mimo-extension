@@ -373,15 +373,32 @@ async function fetchJson(url, cookie, signal) {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      return [false, `HTTP ${res.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`];
+      // 附带状态码：调用方要据此区分「登录失效(401)」与其它失败。
+      // 光看错误字符串得正则匹配，脆且容易随上游文案变化而失效。
+      return [false, {
+        status: res.status,
+        message: `HTTP ${res.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`,
+      }];
     }
     return [true, await res.json()];
   } catch (error) {
-    return [false, error instanceof Error ? error.message : String(error)];
+    return [false, { status: 0, message: error instanceof Error ? error.message : String(error) }];
   } finally {
     clearTimeout(timer);
     if (signal) signal.removeEventListener("abort", onAbort);
   }
+}
+
+/** `fetchJson` 的失败值 → 可读消息（兼容旧的纯字符串形态）。 */
+function msgOf(v) {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object" && typeof v.message === "string") return v.message;
+  return String(v);
+}
+
+/** 该失败是不是「登录失效」（HTTP 401）。 */
+function isUnauthorized(v) {
+  return !!v && typeof v === "object" && v.status === 401;
 }
 
 /** 官方 tokenPlan/detail → {planCode, periodEnd, expired} 或 null。 */
@@ -1333,6 +1350,8 @@ async function buildSummary(deps, signal, options = {}) {
   const result = {
     official: false,
     officialError: "",
+    // 登录是否失效（官方接口 401）。与「网络/上游故障」分开 —— 前者要用户重新登录。
+    authExpired: false,
     cookieSource,
     plan: null,
     planUsage: null,
@@ -1360,6 +1379,7 @@ async function buildSummary(deps, signal, options = {}) {
   result.planStatus = official.planStatus;
   result.official = official.official;
   result.officialError = official.officialError;
+  result.authExpired = official.authExpired === true;
   result.plan = official.plan;
   result.planUsage = official.planUsage;
   result.balance = official.balance;
@@ -1676,6 +1696,7 @@ export function apply(ctx, config) {
       return {
         official: false,
         officialError: "未配置 Cookie（config.mimo.cookie / 凭据 MIMO_CONSOLE_COOKIE）",
+        authExpired: false,
         planStatus: "unknown",
         plan: null,
         planUsage: null,
@@ -1699,6 +1720,7 @@ export function apply(ctx, config) {
         planStatus: planStatusOf(okD, rawD, plan),
         official: false,
         officialError: "",
+        authExpired: false,
         plan: null,
         planUsage: null,
         balance: null,
@@ -1710,10 +1732,14 @@ export function apply(ctx, config) {
         value.planUsage = usage;
       } else {
         const errs = [];
-        if (!okB) errs.push(`balance: ${rawB}`);
-        if (!okD) errs.push(`detail: ${rawD}`);
-        if (!okU) errs.push(`usage: ${rawU}`);
+        if (!okB) errs.push(`balance: ${msgOf(rawB)}`);
+        if (!okD) errs.push(`detail: ${msgOf(rawD)}`);
+        if (!okU) errs.push(`usage: ${msgOf(rawU)}`);
         value.officialError = errs.join("; ") || "empty responses";
+        // 登录是否失效（三个接口任一明确 401）—— 与「网络抖动/上游故障」区分开：
+        // 前者要用户重新登录，后者等重试即可，界面提示完全不同。
+        value.authExpired =
+          isUnauthorized(rawB) || isUnauthorized(rawD) || isUnauthorized(rawU);
       }
       officialCache = value;
       officialAt = Date.now();
@@ -2087,6 +2113,10 @@ export function apply(ctx, config) {
                       billingTypeOverrides: m.billingTypeOverrides ?? {},
                       pricing: m.pricing ?? {},
                       writable: Boolean(userSettings),
+                      // 登录是否失效 + 失败原因（供界面给「重新登录」引导）。
+                      // 从缓存里的官方结果读，不额外打网络。
+                      authExpired: officialCache?.authExpired === true,
+                      authError: officialCache?.officialError ?? "",
                     },
                   });
                   return;
@@ -2134,6 +2164,49 @@ export function apply(ctx, config) {
                 return;
               }
 
+              // 校验一个 Cookie 是否有效（**保存前**先验）。
+              // 为什么需要：小米的 Cookie 是浏览器会话产物、会过期，用户粘错一个字符
+              // 也看不出来 —— 存进去之后只表现为「一直显示本地估算」。
+              // 这里拿候选 Cookie 真打一次官方接口，把结论明确回给界面。
+              // ⚠ 只校验**请求里带来的候选值**，不读已存的（那是另一件事）；
+              //    也不落盘 —— 校验通过与否由用户决定要不要保存。
+              if (url.pathname === ROUTE_PREFIX + "/validate-cookie") {
+                if (req.method !== "POST") {
+                  writeJson(res, 405, { ok: false, error: "只接受 POST" });
+                  return;
+                }
+                const body = await readJsonBody(req);
+                const candidate = typeof body?.cookie === "string" ? body.cookie.trim() : "";
+                if (!candidate) {
+                  writeJson(res, 400, { ok: false, error: "缺少 cookie 字段" });
+                  return;
+                }
+                const base = (process.env.MIMO_API_URL || DEFAULT_MIMO_API).replace(/\/+$/, "");
+                const [okB, rawB] = await fetchJson(`${base}/balance`, candidate);
+                const [okD, rawD] = await fetchJson(`${base}/tokenPlan/detail`, candidate);
+                const [okU, rawU] = await fetchJson(`${base}/tokenPlan/usage`, candidate);
+                // 与"能否读到数据"同一判据：tokenPlan 接口通 = 套餐可用；
+                // 仅 balance 通 = 按量账号也有效。两者都失败才算无效。
+                const valid = okB || okD || okU;
+                const unauthorized = isUnauthorized(rawB) || isUnauthorized(rawD) || isUnauthorized(rawU);
+                const plan = okD ? parseTokenPlanDetail(rawD) : null;
+                const usage = okU ? parseTokenPlanUsage(rawU) : null;
+                writeJson(res, 200, {
+                  ok: true,
+                  data: {
+                    valid,
+                    unauthorized,
+                    // 能给用户看的简短原因（不含凭据）
+                    error: valid ? "" : msgOf(rawB || rawD || rawU).slice(0, 200),
+                    planCode: plan?.planCode ?? "",
+                    periodEnd: plan?.periodEnd ?? "",
+                    limit: usage?.items?.[0]?.limit ?? 0,
+                    used: usage?.items?.[0]?.used ?? 0,
+                    unit: usage?.unit ?? "",
+                  },
+                });
+                return;
+              }
               if (req.method !== "GET") {
                 writeJson(res, 405, { ok: false, error: "method not allowed" });
                 return;

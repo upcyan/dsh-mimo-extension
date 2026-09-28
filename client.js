@@ -327,6 +327,26 @@
       "cfg.saveFailed": "保存失败：{error}",
       "cfg.readonly": "当前环境设置不可写（settings 服务未装配）",
       "cfg.cookieHelp": "获取步骤：登录 platform.xiaomimimo.com → DevTools → Network → 任一 /api/v1 请求 → 复制完整 Cookie 请求头（需含 api-platform_serviceToken 与 userId）。",
+      "view.authExpiredTitle": "MiMo 登录已失效",
+      "view.authExpiredHint": "官方接口返回 401，下面的数据是本地估算值，不是你的真实套餐额度。重新登录小米账号并更新 Cookie 即可恢复。",
+      "view.authExpiredAction": "去更新 Cookie →",
+      "view.localGeneric": "本地估算（未登录或登录已失效）",
+      "cfg.verify": "验证",
+      "cfg.verifying": "验证中…",
+      "cfg.verifyEmpty": "请先粘贴 Cookie",
+      "cfg.verifyOk": "Cookie 可用 ✅",
+      "cfg.verifyPlan": "套餐 {code}，有效期至 {end}；本月已用 {used} / {limit} {unit}",
+      "cfg.verifyExpired": "Cookie 已失效（官方返回 401），请重新登录获取",
+      "cfg.verifyFail": "验证失败",
+      "cfg.guideShow": "怎么获取 Cookie？",
+      "cfg.guideHide": "收起说明",
+      "cfg.guideTitle": "获取 Cookie 的步骤",
+      "cfg.guideStep1": "1. 打开 platform.xiaomimimo.com 并登录小米账号",
+      "cfg.guideStep2": "2. 按 F12 打开开发者工具，切到 Network 标签",
+      "cfg.guideStep3": "3. 刷新页面，点任意一个 /api/v1 请求，在 Headers 里找到 Cookie 请求头",
+      "cfg.guideStep4": "4. 复制完整的一整段，粘到上面的输入框，点「验证」确认可用后再保存",
+      "cfg.guideWhyManual": "为什么不能一键登录：小米只提供网页登录，没有开放授权接口，插件拿不到登录回调；额度接口也只认 Cookie，不认 API Key。",
+      "cfg.guideOpenConsole": "打开 MiMo 控制台 →",
       "cfg.paste": "粘贴",
       "cfg.pasteDone": "已从剪贴板填入（记得点保存）",
       "cfg.pasteFail": "读不到剪贴板，请手动按 Ctrl+V，或右键粘贴",
@@ -445,6 +465,26 @@
       "cfg.saveFailed": "Save failed: {error}",
       "cfg.readonly": "Settings are read-only here (the settings service is not mounted).",
       "cfg.cookieHelp": "How to get it: sign in at platform.xiaomimimo.com → DevTools → Network → any /api/v1 request → copy the full Cookie request header (must include api-platform_serviceToken and userId).",
+      "view.authExpiredTitle": "MiMo sign-in has expired",
+      "view.authExpiredHint": "The official API returned 401. The figures below are local estimates, not your actual plan quota. Sign in again and update the cookie to restore them.",
+      "view.authExpiredAction": "Update cookie →",
+      "view.localGeneric": "Local estimate (not signed in, or sign-in expired)",
+      "cfg.verify": "Verify",
+      "cfg.verifying": "Verifying…",
+      "cfg.verifyEmpty": "Paste a cookie first",
+      "cfg.verifyOk": "Cookie works ✅",
+      "cfg.verifyPlan": "Plan {code}, valid until {end}; used this month {used} / {limit} {unit}",
+      "cfg.verifyExpired": "Cookie has expired (the API returned 401) — sign in again to get a new one",
+      "cfg.verifyFail": "Verification failed",
+      "cfg.guideShow": "How do I get the cookie?",
+      "cfg.guideHide": "Hide instructions",
+      "cfg.guideTitle": "Getting the cookie",
+      "cfg.guideStep1": "1. Open platform.xiaomimimo.com and sign in with your Xiaomi account",
+      "cfg.guideStep2": "2. Press F12 for developer tools, then open the Network tab",
+      "cfg.guideStep3": "3. Reload the page, click any /api/v1 request, and find the Cookie request header under Headers",
+      "cfg.guideStep4": "4. Copy the whole value into the field above, press Verify, and save once it passes",
+      "cfg.guideWhyManual": "Why there is no one-click sign-in: Xiaomi offers only a web login, with no authorization endpoint for the plugin to call back to, and the quota API accepts only the cookie, not an API key.",
+      "cfg.guideOpenConsole": "Open the MiMo console →",
       "cfg.paste": "Paste",
       "cfg.pasteDone": "Filled from clipboard (remember to Save)",
       "cfg.pasteFail": "Clipboard unavailable — press Ctrl+V manually or right-click paste",
@@ -476,6 +516,20 @@
       if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
       return String(Math.round(n));
     }
+    /**
+     * 把官方接口的原始错误串压成一句能看的短句。
+     *
+     * 上游 401 的 body 是 `{"code":401,"loginUrl":"https://account.xiaomi.com/..."}`，
+     * 直接铺到界面上就是几百字符加一条长 URL。这里只保留最前面的形态描述
+     * （`HTTP 401` / 超时 之类），细节留给控制台。
+     */
+    function shortError(raw) {
+      const text = typeof raw === "string" ? raw : raw ? String(raw) : "";
+      if (!text) return "未知原因";
+      const head = text.split(/[;；]/)[0].trim();
+      return head.length > 60 ? `${head.slice(0, 60)}…` : head;
+    }
+
     const fmtFull = (n) => (Number.isFinite(n) ? Math.round(n).toLocaleString() : "0");
     const fmtPercent = (p) => (!Number.isFinite(p) ? "0" : p >= 10 ? p.toFixed(1) : p.toFixed(2));
     function fmtCost(c) {
@@ -1433,6 +1487,10 @@
       const [session, setSession] = useState(null);
       const [error, setError] = useState("");
       const [loading, setLoading] = useState(true);
+
+      // 登录是否失效（来自 /summary 的 authExpired）；用于显示「重新登录」提示条
+
+      const [authExpired, setAuthExpired] = useState(false);
       const epochRef = useRef(0);
 
       // 当前选中的模型（与胶囊同一来源：会话投影 `modelSelection`）。
@@ -1468,7 +1526,10 @@
           setError("");
           try {
             const data = await rpc("summary", force ? { refresh: "1" } : undefined);
-            if (epoch === epochRef.current) setSummary(data);
+            if (epoch === epochRef.current) {
+              setSummary(data);
+              setAuthExpired(data?.authExpired === true);
+            }
           } catch (e) {
             if (epoch === epochRef.current) setError(e instanceof Error ? e.message : String(e));
           } finally {
@@ -1740,11 +1801,79 @@
             ),
           ),
         ),
+        // 数据来源行。
+        // ⚠ 官方失败时**不要**把原始错误串直接铺出来 —— 它是
+        // `balance: HTTP 401: {"code":401,"loginUrl":"https://account.xiaomi.com/..."}`
+        // 这种形态，几百字符、含长 URL，会把布局撑乱而且用户读不懂。
+        // 登录失效（401）单独走下面的提示条，其余失败只给一句简短原因。
         h(
           "div",
           { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)", marginBottom: "14px" } },
-          summary?.official ? t("view.official") : summary ? `${t("view.local")} · ${summary.officialError}` : "",
+          summary?.official
+            ? t("view.official")
+            : summary
+              ? (summary.authExpired ? t("view.localGeneric") : `${t("view.local")} · ${shortError(summary.officialError)}`)
+              : "",
         ),
+        // ── A：登录失效提示条（带「重新登录」入口）────────────────────────
+        // Cookie 是浏览器会话产物，会过期；过期后三个官方接口都 401，
+        // 数据静默退化成「本地估算」。用户看到的现象是"套餐总量怎么变回我手填的了"，
+        // 却不知道要重新登录 —— 所以这里必须**主动说破**并给出下一步。
+        authExpired
+          ? h(
+              "div",
+              {
+                style: {
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "10px",
+                  padding: "10px 12px",
+                  marginBottom: "14px",
+                  borderRadius: "8px",
+                  background: "var(--dsw-alias-bg-modal, #fff8e6)",
+                  border: "1px solid var(--dsw-alias-state-warning-primary, #d4a72c)",
+                  fontSize: "12px",
+                  lineHeight: 1.6,
+                },
+              },
+              h("span", { style: { fontSize: "15px", lineHeight: 1.2 } }, "⚠"),
+              h(
+                "div",
+                { style: { flex: "1 1 auto", minWidth: 0 } },
+                h("div", { style: { fontWeight: 600, marginBottom: "3px" } }, t("view.authExpiredTitle")),
+                h(
+                  "div",
+                  { style: { color: "var(--dsw-alias-label-secondary, #59636e)" } },
+                  t("view.authExpiredHint"),
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: () => {
+                      // 滚到页面底部的配置表单并聚焦 Cookie 输入框
+                      const el = document.getElementById("mimo-cookie-input");
+                      if (el && typeof el.scrollIntoView === "function") {
+                        el.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }
+                      if (el && typeof el.focus === "function") el.focus();
+                    },
+                    style: {
+                      marginTop: "6px",
+                      padding: "4px 10px",
+                      fontSize: "12px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--dsw-alias-border-l2, #d0d7de)",
+                      background: "var(--dsw-alias-bg-layer-1, #fff)",
+                      color: "var(--dsw-alias-label-primary, #1f2328)",
+                      cursor: "pointer",
+                    },
+                  },
+                  t("view.authExpiredAction"),
+                ),
+              ),
+            )
+          : null,
         error
           ? h("div", { style: { color: "var(--dsw-alias-state-error-primary, #cf222e)", marginBottom: "10px" } }, error)
           : null,
@@ -2239,6 +2368,15 @@
       const [cfg, setCfg] = useState(null);
       const [cookie, setCookie] = useState("");
       const [clearCookie, setClearCookie] = useState(false);
+      // ── B：半自动登录 ──────────────────────────────────────────────
+      // 小米只给网页 SSO（account.xiaomi.com/pass/serviceLogin），**没有 OAuth
+      // 端点、没有设备码、没有 refresh token**，插件无从自动换取凭据；
+      // 官方额度接口也**只认 Cookie，不认 API Key**（实测 Bearer 一律 401）。
+      // 所以这里能做的是「把手工步骤讲清楚 + 存之前先验一遍」，
+      // 而不是假装能一键登录。
+      const [guideOpen, setGuideOpen] = useState(false);
+      // {kind:'ok'|'err'|'busy', text, detail?} —— 校验结果
+      const [verify, setVerify] = useState(null);
       const [planTotal, setPlanTotal] = useState("");
       const [position, setPosition] = useState("header");
       const [wrapToolbar, setWrapToolbar] = useState(true);
@@ -2269,6 +2407,46 @@
           alive = false;
         };
       }, []);
+
+      /**
+       * 校验当前输入框里的 Cookie 是否真的可用 —— **保存前**先验。
+       *
+       * 为什么值得单独做：Cookie 是 500 字符的长串，粘错一个字符看不出来；
+       * 存进去之后只表现为「一直显示本地估算」，用户根本不知道哪一步错了。
+       * 这里拿候选值真打一次官方接口，把结论（含套餐码/额度）当场说清楚。
+       */
+      const verifyCookie = useCallback(async () => {
+        const candidate = cookie.trim();
+        if (!candidate) {
+          setVerify({ kind: "err", text: t("cfg.verifyEmpty") });
+          return;
+        }
+        setVerify({ kind: "busy", text: t("cfg.verifying") });
+        try {
+          const r = await rpc("validate-cookie", { cookie: candidate }, "POST");
+          if (r?.valid) {
+            setVerify({
+              kind: "ok",
+              text: t("cfg.verifyOk"),
+              detail: r.planCode
+                ? t("cfg.verifyPlan", {
+                    code: r.planCode,
+                    end: r.periodEnd || "—",
+                    used: fmtFull(r.used ?? 0),
+                    limit: fmtFull(r.limit ?? 0),
+                    unit: r.unit || "",
+                  })
+                : "",
+            });
+          } else if (r?.unauthorized) {
+            setVerify({ kind: "err", text: t("cfg.verifyExpired"), detail: shortError(r.error) });
+          } else {
+            setVerify({ kind: "err", text: t("cfg.verifyFail"), detail: shortError(r?.error) });
+          }
+        } catch (e) {
+          setVerify({ kind: "err", text: t("cfg.verifyFail"), detail: shortError(e instanceof Error ? e.message : String(e)) });
+        }
+      }, [cookie]);
 
       const save = useCallback(async () => {
         setBusy(true);
@@ -2366,6 +2544,8 @@
                 value: cookie,
                 disabled: busy || clearCookie,
                 placeholder: cfg?.cookieConfigured ? t("cfg.cookieKeep") : t("cfg.cookiePlaceholder"),
+                // 详情页顶部的「重新登录」按钮靠这个 id 滚过来并聚焦
+                id: "mimo-cookie-input",
                 onChange: (e) => {
                   setCookie(e.currentTarget.value);
                   setMessage(null);
@@ -2452,7 +2632,131 @@
               ),
             ),
             h("p", { style: { margin: "5px 0 0", fontSize: "11px", lineHeight: 1.6, color: "var(--dsw-alias-label-tertiary, #59636e)" } }, t("cfg.cookieWhy")),
-            h("p", { style: { margin: "3px 0 0", fontSize: "11px", lineHeight: 1.6, color: "var(--dsw-alias-label-tertiary, #59636e)" } }, t("cfg.cookieHelp")),
+
+            // ── B：登录引导 + 保存前校验 ───────────────────────────────
+            // 把「去哪拿 Cookie」的步骤摊在界面上，并允许当场验证。
+            // 说明白为什么不能一键登录（小米没有 OAuth），用户才不会觉得是插件偷懒。
+            h(
+              "div",
+              { style: { marginTop: "8px" } },
+              h(
+                "div",
+                { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: () => setGuideOpen((v) => !v),
+                    style: {
+                      padding: "4px 10px",
+                      fontSize: "12px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16))",
+                      background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08))",
+                      color: "inherit",
+                      cursor: "pointer",
+                    },
+                    "data-role": "login-guide-toggle",
+                  },
+                  guideOpen ? t("cfg.guideHide") : t("cfg.guideShow"),
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    disabled: busy || clearCookie || !cookie.trim(),
+                    onClick: verifyCookie,
+                    style: {
+                      padding: "4px 10px",
+                      fontSize: "12px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16))",
+                      background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08))",
+                      color: "inherit",
+                      cursor: busy || clearCookie || !cookie.trim() ? "not-allowed" : "pointer",
+                      opacity: busy || clearCookie || !cookie.trim() ? 0.5 : 1,
+                    },
+                    "data-role": "verify-cookie",
+                  },
+                  t("cfg.verify"),
+                ),
+                verify
+                  ? h(
+                      "span",
+                      {
+                        style: {
+                          fontSize: "11px",
+                          color:
+                            verify.kind === "ok"
+                              ? "var(--dsw-alias-state-success-primary, #1a7f37)"
+                              : verify.kind === "err"
+                                ? "var(--dsw-alias-state-error-primary, #cf222e)"
+                                : "var(--dsw-alias-label-tertiary, #59636e)",
+                        },
+                        "data-role": "verify-result",
+                      },
+                      verify.text,
+                    )
+                  : null,
+              ),
+              verify?.detail
+                ? h(
+                    "p",
+                    {
+                      style: {
+                        margin: "4px 0 0",
+                        fontSize: "11px",
+                        lineHeight: 1.6,
+                        color: "var(--dsw-alias-label-tertiary, #59636e)",
+                        wordBreak: "break-all",
+                      },
+                    },
+                    verify.detail,
+                  )
+                : null,
+              guideOpen
+                ? h(
+                    "div",
+                    {
+                      style: {
+                        marginTop: "8px",
+                        padding: "10px 12px",
+                        borderRadius: "8px",
+                        background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,.06))",
+                        fontSize: "11px",
+                        lineHeight: 1.8,
+                        color: "var(--dsw-alias-label-secondary, #59636e)",
+                      },
+                      "data-role": "login-guide",
+                    },
+                    h("div", { style: { fontWeight: 600, marginBottom: "4px" } }, t("cfg.guideTitle")),
+                    h("div", null, t("cfg.guideStep1")),
+                    h("div", null, t("cfg.guideStep2")),
+                    h("div", null, t("cfg.guideStep3")),
+                    h("div", null, t("cfg.guideStep4")),
+                    h(
+                      "div",
+                      { style: { marginTop: "6px", opacity: 0.85 } },
+                      t("cfg.guideWhyManual"),
+                    ),
+                    h(
+                      "a",
+                      {
+                        href: "https://platform.xiaomimimo.com",
+                        target: "_blank",
+                        rel: "noreferrer noopener",
+                        style: {
+                          display: "inline-block",
+                          marginTop: "6px",
+                          color: "var(--dsw-alias-state-business-primary, #0969da)",
+                          textDecoration: "none",
+                        },
+                      },
+                      t("cfg.guideOpenConsole"),
+                    ),
+                  )
+                : null,
+            ),
           ),
 
           // 套餐总量 + 胶囊位置

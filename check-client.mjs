@@ -548,11 +548,29 @@ for (const scene of SCENARIOS) {
 {
   const src3 = readFileSync(new URL("./client.js", import.meta.url), "utf8");
   const used = new Set([...src3.matchAll(/\bt\("([a-zA-Z0-9_.]+)"/g)].map((m) => m[1]));
+  // ⚠ 用**大括号配对**切块，不能找第一个 `};` ——
+  // 块里只要出现一次以 `};` 结尾的行（嵌套对象/多行值），切片就会提前截断，
+  // 于是后半段 key 全被误判成"缺英文/缺中文"。
+  // 我加登录引导文案时就踩到了：14 条已存在的 key 被报成缺失。
+  const sliceObject = (marker) => {
+    const at = src3.indexOf(marker);
+    if (at < 0) return "";
+    let i = src3.indexOf("{", at);
+    if (i < 0) return "";
+    let depth = 0;
+    for (let k = i; k < src3.length; k += 1) {
+      if (src3[k] === "{") depth += 1;
+      else if (src3[k] === "}") {
+        depth -= 1;
+        if (depth === 0) return src3.slice(i, k + 1);
+      }
+    }
+    return src3.slice(i);
+  };
   const zhStart = src3.indexOf("const zh = {");
   const enStart = src3.indexOf("const en = {");
   const zhBlock = src3.slice(zhStart, enStart);
-  const enEnd = src3.indexOf("};", enStart);
-  const enBlock = src3.slice(enStart, enEnd);
+  const enBlock = sliceObject("const en = {");
   const keysOf = (block) => new Set([...block.matchAll(/"([a-zA-Z0-9_.]+)":/g)].map((m) => m[1]));
   const zhKeys = keysOf(zhBlock);
   const enKeys = keysOf(enBlock);
@@ -571,6 +589,24 @@ for (const scene of SCENARIOS) {
   const enDup = dupOf(enBlock);
   ok(zhDup.length === 0, `zh 块内无重复 key${zhDup.length ? `（${zhDup.join(",")}）` : ""}`);
   ok(enDup.length === 0, `en 块内无重复 key${enDup.length ? `（${enDup.join(",")}）` : ""}`);
+
+  // ⚠ 反向校验：切块必须覆盖到块的**真正结尾**。
+  // 只要文案里出现 `};` 这样的字符序列（例如 `...{end}; used...`），
+  // 朴素的"找第一个 };" 就会截断，把后半段 key 全报成缺失。
+  // 这里断言切出来的 en 块与真结尾一致 —— 以后再加这类文案会立刻暴露。
+  {
+    let depth = 0;
+    let realEnd = -1;
+    for (let k = src3.indexOf("{", enStart); k < src3.length; k += 1) {
+      if (src3[k] === "{") depth += 1;
+      else if (src3[k] === "}") {
+        depth -= 1;
+        if (depth === 0) { realEnd = k; break; }
+      }
+    }
+    ok(realEnd > 0 && enBlock.length === realEnd - src3.indexOf("{", enStart) + 1,
+      "★ en 块切到真结尾（文案里出现 `};` 也不会截断）");
+  }
 
   const missingZh = [...used].filter((k) => !zhKeys.has(k));
   const missingEn = [...used].filter((k) => !enKeys.has(k));
