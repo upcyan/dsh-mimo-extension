@@ -330,7 +330,7 @@
       "cfg.saved": "已保存",
       "cfg.saveFailed": "保存失败：{error}",
       "cfg.readonly": "当前环境设置不可写（settings 服务未装配）",
-      "cfg.cookieHelp": "获取步骤：登录 platform.xiaomimimo.com → DevTools → Network → 任一 /api/v1 请求 → 复制完整 Cookie 请求头（需含 api-platform_serviceToken 与 userId）。",
+      "cfg.cookieHelp": "获取步骤：登录 platform.xiaomimimo.com/console/balance → DevTools → Network → 任一 /api/v1 请求 → 复制完整 Cookie 请求头（需含 api-platform_serviceToken 与 userId）。",
       "view.authExpiredTitle": "MiMo 登录已失效",
       "view.authExpiredHint": "官方接口返回 401。本页数字是本地估算，不是你的真实套餐额度。重新登录小米账号并更新 Cookie 即可恢复。",
       "view.authExpiredAction": "去更新 Cookie →",
@@ -345,7 +345,7 @@
       "cfg.guideShow": "怎么获取 Cookie？",
       "cfg.guideHide": "收起说明",
       "cfg.guideTitle": "获取 Cookie 的步骤",
-      "cfg.guideStep1": "1. 打开 platform.xiaomimimo.com 并登录小米账号",
+      "cfg.guideStep1": "1. 打开 platform.xiaomimimo.com/console/balance 并登录小米账号",
       "cfg.guideStep2": "2. 按 F12 打开开发者工具，切到 Network 标签",
       "cfg.guideStep3": "3. 刷新页面，点任意一个 /api/v1 请求，在 Headers 里找到 Cookie 请求头",
       "cfg.guideStep4": "4. 复制完整的一整段，粘到上面的输入框，点「验证」确认可用后再保存",
@@ -480,7 +480,7 @@
       "cfg.saved": "Saved",
       "cfg.saveFailed": "Save failed: {error}",
       "cfg.readonly": "Settings are read-only here (the settings service is not mounted).",
-      "cfg.cookieHelp": "How to get it: sign in at platform.xiaomimimo.com → DevTools → Network → any /api/v1 request → copy the full Cookie request header (must include api-platform_serviceToken and userId).",
+      "cfg.cookieHelp": "How to get it: sign in at platform.xiaomimimo.com/console/balance → DevTools → Network → any /api/v1 request → copy the full Cookie request header (must include api-platform_serviceToken and userId).",
       "view.authExpiredTitle": "MiMo sign-in has expired",
       "view.authExpiredHint": "The official API returned 401. The figures on this page are local estimates, not your actual plan quota. Sign in again and update the cookie to restore them.",
       "view.authExpiredAction": "Update cookie →",
@@ -495,7 +495,7 @@
       "cfg.guideShow": "How do I get the cookie?",
       "cfg.guideHide": "Hide instructions",
       "cfg.guideTitle": "Getting the cookie",
-      "cfg.guideStep1": "1. Open platform.xiaomimimo.com and sign in with your Xiaomi account",
+      "cfg.guideStep1": "1. Open platform.xiaomimimo.com/console/balance and sign in with your Xiaomi account",
       "cfg.guideStep2": "2. Press F12 for developer tools, then open the Network tab",
       "cfg.guideStep3": "3. Reload the page, click any /api/v1 request, and find the Cookie request header under Headers",
       "cfg.guideStep4": "4. Copy the whole value into the field above, press Verify, and save once it passes",
@@ -3043,7 +3043,8 @@
                     h(
                       "a",
                       {
-                        href: "https://platform.xiaomimimo.com",
+                        // 直达「余额」控制台页：登录后第一屏就是 /api/v1 请求，比落地页少一步跳转。
+                        href: "https://platform.xiaomimimo.com/console/balance",
                         target: "_blank",
                         rel: "noreferrer noopener",
                         style: {
