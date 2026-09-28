@@ -354,9 +354,16 @@ for (const scene of SCENARIOS) {
     ok(/MAX_SAFE_DAYS/.test(src), "★ 有 Date 溢出防线（天数为 1e8 量级时）");
     ok(/const daysToEnd = endValid \? \(end\.getTime\(\) - now\.getTime\(\)\) \/ 86400000/.test(src),
       "★ 判「谁先到」用天数比，不用 Date 比较（避免 Invalid Date 误判）");
-    for (const k of ["view.exhaustsByQuota","view.exhaustsByExpiry","view.exhaustsValue","view.exhaustsToday","view.exhaustsNote"]) {
+    for (const k of ["view.exhaustsByQuota","view.exhaustsByExpiry","view.exhaustsValue","view.exhaustsToday","view.exhaustsNotePeriod","view.exhaustsNoteRecent"]) {
       ok(src.includes(`"${k}":`), `有文案 ${k}`);
     }
+    // 全周期口径优先（用户反馈：只看最近几天会失真）
+    ok(/const periodDailyUnits =/.test(src), "有全周期日均 periodDailyUnits");
+    ok(/plan_total_token/.test(src), "★ 用 plan_total_token（整周期累计）而非 month_total_token（每月归零）");
+    ok(/const dailyUnits = periodDailyUnits \?\? dailyUnitsFallback/.test(src), "★ 优先全周期日均，缺失才退回近期");
+    ok(/rateBasis: periodDailyUnits !== null \? "period" : "recent"/.test(src), "带口径标记供 UI 说明");
+    // 日期带年份
+    ok(/forecast\.exhaustDate\.getFullYear\(\)/.test(src), "★ 耗尽日期带年份（跨年套餐不误解）");
   }
 
   // ---------- 卡片填充 + widthHandle（09-28 用户反馈）----------
@@ -376,8 +383,15 @@ for (const scene of SCENARIOS) {
     ok(/minHeight: "3px"/.test(src), "柱子有最小高度（0 值也可见）");
     // ③ widthHandle：根节点必须带 data-conversation-composer-overlay
     const rootSeg = src.slice(src.indexOf("function MimoUsageView("), src.indexOf("function MimoSettingsForm("));
-    ok(/"data-conversation-composer-overlay": ""/.test(rootSeg),
-      "★ 视图根带 data-conversation-composer-overlay（否则平台显示拖拽手柄）");
+    // 🔴 09-28 修正：不要用 `data-conversation-composer-overlay` 隐藏手柄 ——
+    // 它的语义是"本视图自带滚动容器"，会把 viewArea 锁成固定高度，
+    // 我们没有内部滚动容器 → 详情页**滚不动**。
+    // 正确做法：不加该属性（保住滚动），用自有 CSS 隐藏手柄。
+    ok(!/"data-conversation-composer-overlay": ""/.test(rootSeg),
+      "★ 视图根**不**带 data-conversation-composer-overlay（带了会把视图锁死、滚不动）");
+    ok(/function applyHideResizeHandles/.test(src), "有 applyHideResizeHandles（自有 CSS 隐藏手柄）");
+    ok(/data-width-handle/.test(src), "★ 按平台数据属性选择手柄（不依赖哈希类名）");
+    ok(/display: none !important/.test(src), "手柄用 display:none（只挡指针仍会改光标）");
     ok(/maxWidth: "1100px"/.test(rootSeg), "保留可读宽度上限");
   }
 

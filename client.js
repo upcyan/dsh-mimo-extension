@@ -281,7 +281,8 @@
       "view.exhaustsByExpiry": "预计到期（额度未用完）",
       "view.exhaustsValue": "{date}（约 {days} 天）",
       "view.exhaustsToday": "今天之内",
-      "view.exhaustsNote": "按近 {days} 日速度推算，仅供参考。官方规则：套餐在「到期」或「额度用完」任一先到即停止服务。",
+      "view.exhaustsNotePeriod": "按**整个套餐周期**的日均推算（官方累计 ÷ 已过 {days} 天），仅供参考。官方规则：套餐在「到期」或「额度用完」任一先到即停止服务。",
+      "view.exhaustsNoteRecent": "本地记录不足一个完整周期，改用近 {days} 日速度推算，仅供参考。官方规则：套餐在「到期」或「额度用完」任一先到即停止服务。",
       "view.charge": "收费估算",
       "view.chargeNote": "Token Plan 套餐内调用不额外收费，只消耗套餐配额。",
       "view.chargeEst": "会话费用（估算）",
@@ -424,7 +425,8 @@
       "view.exhaustsByExpiry": "Expires first",
       "view.exhaustsValue": "{date} (~{days}d)",
       "view.exhaustsToday": "Today",
-      "view.exhaustsNote": "Extrapolated from the last {days} days; indicative only. Per the provider, service stops at whichever comes first: expiry or quota exhaustion.",
+      "view.exhaustsNotePeriod": "Extrapolated from the whole plan period (provider total over {days} days elapsed); indicative only. Per the provider, service stops at whichever comes first: expiry or quota exhaustion.",
+      "view.exhaustsNoteRecent": "Not enough local history for a full period, so this uses the last {days} days; indicative only. Per the provider, service stops at whichever comes first: expiry or quota exhaustion.",
       "view.charge": "Charge (est.)",
       "view.chargeNote": "Token Plan calls consume quota only, with no extra charge.",
       "view.chargeEst": "Session cost (estimated)",
@@ -1612,14 +1614,39 @@
           local.monthTokens > 0 && usedUnits > 0 ? usedUnits / local.monthTokens : 0;
         const projectedMonth = local.monthTokens + avgDaily * remainingDays;
 
+        // ── 全周期日均（用户反馈：不该只看最近几天）────────────────────
+        // 只看近 3~7 天会失真：实测本机 09-25 是 56M、09-27 涨到 929M，
+        // 换个窗口结论就能差好几倍。
+        //
+        // ✅ 权威口径是**官方累计 ÷ 已过天数**：
+        //    `plan_total_token`（extra[0]）是**整个套餐周期**的累计用量
+        //    （`month_total_token` 每月归零，不能用来算全周期）。
+        //    周期起始 = 到期日往前推一个订阅周期（planCode 里的 `year`/`month`）。
+        //
+        // ⚠ 拿不到周期信息时退化为"本地已有天数的日均"，并沿用 thinSample 标注。
+        const planItems = Array.isArray(planUsage?.extra) ? planUsage.extra : [];
+        const periodUsed = Number(planItems.find((x) => x?.name === "plan_total_token")?.used) || 0;
+        const periodEndRaw = summary?.plan?.periodEnd ? new Date(String(summary.plan.periodEnd).replace(" ", "T")) : null;
+        const periodEndValid = periodEndRaw && !Number.isNaN(periodEndRaw.getTime());
+        // 订阅周期长度：planCode 形如 "lite:year" / "lite:month"
+        const code = String(summary?.plan?.planCode ?? "");
+        const periodDays = /year|annual|:y\b/i.test(code) ? 365 : /month|:m\b/i.test(code) ? 30 : null;
+        const periodStart = periodEndValid && periodDays ? new Date(periodEndRaw.getTime() - periodDays * 86400000) : null;
+        const elapsedDays = periodStart ? Math.max(1, Math.floor((now.getTime() - periodStart.getTime()) / 86400000)) : null;
+        // 全周期日均（额度单位）：官方累计 ÷ 已过天数
+        const periodDailyUnits = periodUsed > 0 && elapsedDays ? periodUsed / elapsedDays : null;
+
         // ── 额度耗尽预测 ───────────────────────────────────────────────
         // 官方规则（mimo.mi.com 文档）："套餐在**到期**或**全部 Credits 用完**
         // 任一条件满足时，即停止服务"。所以"还能用多久"= min(额度耗尽, 套餐到期)。
         let daysToExhaust = null;
         let exhaustDate = null;
         let exhausted = null; // 'units' | 'expiry' | null —— 谁先到
-        if (limit > 0 && usedUnits > 0 && unitsPerToken > 0) {
-          const dailyUnits = avgDaily * unitsPerToken;
+        if (limit > 0 && usedUnits > 0 && (unitsPerToken > 0 || periodDailyUnits > 0)) {
+          // 🔴 优先用**全周期日均**（官方累计 ÷ 已过天数）；拿不到才退回近 7 天本地均值。
+          //    用户反馈"应该看全周期的消耗"—— 只看最近几天会被突发流量带偏。
+          const dailyUnitsFallback = avgDaily * unitsPerToken;
+          const dailyUnits = periodDailyUnits ?? dailyUnitsFallback;
           const leftUnits = Math.max(0, limit - usedUnits);
           if (dailyUnits > 0) daysToExhaust = leftUnits / dailyUnits;
           // ⚠ 算 exhaustDate 前必须挡住超出 Date 范围的天数：
@@ -1652,8 +1679,13 @@
             ? Math.max(0, limit - (unitsPerToken > 0 ? projectedMonth * unitsPerToken : limit))
             : null,
           overBudget: limit > 0 && unitsPerToken > 0 && projectedMonth * unitsPerToken > limit,
-          // 额度耗尽预测（新增）
+          // 额度耗尽预测
           unitsPerToken,
+          // 日均用的是哪种口径：'period'（全周期，官方累计）| 'recent'（本地近 7 天）
+          rateBasis: periodDailyUnits !== null ? "period" : "recent",
+          dailyUnits: periodDailyUnits ?? (unitsPerToken > 0 ? avgDaily * unitsPerToken : null),
+          elapsedDays,
+          periodUsed,
           daysToExhaust,
           exhaustDate,
           exhausted,            // 'units'（先用完）| 'expiry'（先到期）
@@ -1820,15 +1852,19 @@
           // ⚠ 别在这里加 `overflow:auto`：那会多出一个内层滚动条，出现"双滚动"，
           //    与官方视图的观感不一致（我第一版就这么写错了）。
           //
-          // 🔴 `data-conversation-composer-overlay` 不能少（09-28 用户反馈
-          //    "我们这页有 widthHandle、轨迹页没有"）：
-          //    平台的会话外壳里有这条规则 ——
-          //      .root:has([data-conversation-composer-overlay]) .widthHandle { display:none }
-          //    chat 与 trajectory 两个官方视图的根节点**都带这个属性**，所以它们
-          //    两侧不出现拖拽手柄；我们没带，于是 `cursor:col-resize` 的手柄压在我们的
-          //    内容上（我们的 maxWidth 比手柄所在的位置更宽）。
-          //    ⚠ 这是平台约定的"视图自带底部 composer 占位"标记，不是可有可无的装饰。
-          "data-conversation-composer-overlay": "",
+          // 🔴 **绝不能加 `data-conversation-composer-overlay`**（09-28 为此改了两次）。
+          //
+          // 我一度加上它，因为它能隐藏 widthHandle（平台规则：
+          //   `.root:has([data-conversation-composer-overlay]) .widthHandle{display:none}`）。
+          // 但该属性真正的语义是「**本视图自带滚动容器**」，加了之后平台改两条布局：
+          //   .viewArea   { flex:1 1 0; min-height:0; overflow:hidden }  ← 锁成固定高度
+          //   .scrollBody { overflow:hidden auto }
+          // 轨迹页加它没事，是因为它内部**真的**有滚动容器（`.tablePane`：
+          // `flex:1; overflow:hidden auto`）；我们内部没有 ⇒ 视图被锁死、内容被裁，
+          // 表现为**详情页不能上下滚动**。
+          //
+          // ✅ 正确做法：不加该属性（保住正常滚动），widthHandle 用我们自己的 CSS
+          //    隐藏 —— 见 applyHideResizeHandles()。
           style: {
             // 撑满平台给的 flex 容器，并允许在空间不足时收缩
             flex: "1 0 auto",
@@ -2447,8 +2483,10 @@
                                 value: forecast.daysToExhaust < 1
                                   ? t("view.exhaustsToday")
                                   : t("view.exhaustsValue", {
+                                      // 带上年份：跨年套餐（本例年付，到期 2027）
+                                      // 只写 "10/28" 会让人以为是今年。
                                       date: forecast.exhaustDate
-                                        ? `${forecast.exhaustDate.getMonth() + 1}/${forecast.exhaustDate.getDate()}`
+                                        ? `${forecast.exhaustDate.getFullYear()}/${forecast.exhaustDate.getMonth() + 1}/${forecast.exhaustDate.getDate()}`
                                         : "—",
                                       days: Math.floor(forecast.daysToExhaust),
                                     }),
@@ -2469,9 +2507,13 @@
                           ? h(
                               "div",
                               { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
-                              t("view.exhaustsNote", {
-                                days: forecast.sampleDays > 0 ? forecast.sampleDays : 1,
-                              }),
+                              // 说明依哪种口径推算 —— 全周期（官方累计）与近 7 天结论可能差很多，
+                              // 不说清楚用户没法判断这个日期可不可信。
+                              forecast.rateBasis === "period"
+                                ? t("view.exhaustsNotePeriod", { days: forecast.elapsedDays ?? 0 })
+                                : t("view.exhaustsNoteRecent", {
+                                    days: forecast.sampleDays > 0 ? forecast.sampleDays : 1,
+                                  }),
                             )
                           : null,
                       )
@@ -3151,6 +3193,42 @@
      * 仅在用户开启 `wrapToolbar` 时生效；用唯一 id 保证幂等，插件卸载时移除。
      */
     const WRAP_STYLE_ID = "dsh-mimo-extension-toolbar-wrap";
+    const HIDE_HANDLE_STYLE_ID = "dsh-mimo-extension-hide-handles";
+    /**
+     * 隐藏会话外壳两侧的列宽拖拽手柄（`widthHandle`）。
+     *
+     * 为什么不用平台的 `data-conversation-composer-overlay`：它确实能隐藏手柄，
+     * 但语义是"本视图自带滚动容器"，会把 `viewArea` 锁成 `overflow:hidden` 的
+     * 固定高度 —— 我们没有内部滚动容器，结果详情页**滚不动**。
+     * 所以这里只做一件事：把两个手柄藏掉。
+     *
+     * ⚠ 用 `display:none` 而不是 `pointer-events:none`：手柄是 40px 宽的
+     * `cursor:col-resize` 覆盖层，只挡指针仍会改变光标形状、hover 竖线还会出现。
+     */
+    function applyHideResizeHandles(enabled) {
+      if (typeof document === "undefined") return () => {};
+      const existing = document.getElementById(HIDE_HANDLE_STYLE_ID);
+      if (!enabled) {
+        existing?.remove();
+        return () => {};
+      }
+      if (existing) return () => {};
+      const style = document.createElement("style");
+      style.id = HIDE_HANDLE_STYLE_ID;
+      style.dataset.plugin = "dsh-mimo-extension";
+      // 按平台的**数据属性**选择（`data-width-handle`），不依赖哈希类名 ——
+      // 平台重新构建后类名会变，数据属性不变。
+      style.textContent = `
+  /* dsh-mimo-extension：隐藏正文两侧的列宽拖拽手柄（本插件视图不需要它）。 */
+  [data-conversation-scroll] [data-width-handle],
+  [class*="_widthHandle"] {
+    display: none !important;
+  }
+  `;
+      document.head.appendChild(style);
+      return () => style.remove();
+    }
+
     function applyToolbarWrap(enabled) {
       if (typeof document === "undefined") return () => {};
       const existing = document.getElementById(WRAP_STYLE_ID);
@@ -3376,6 +3454,10 @@
 
       // 3) 工具栏换行：随偏好开/关
       let disposeWrap = applyToolbarWrap(uiPrefs.wrapToolbar);
+      // 一直隐藏列宽拖拽手柄（本插件视图不需要；见 applyHideResizeHandles 注释）。
+      // 它替代了 `data-conversation-composer-overlay` —— 那个会把视图锁成
+      // 固定高度、导致详情页滚不动。
+      const disposeHandles = applyHideResizeHandles(true);
       const onWrap = () => {
         try {
           disposeWrap();
@@ -3410,6 +3492,11 @@
           uiPrefs.listeners.delete(onWrap);
           try {
             disposeWrap();
+          } catch {
+            /* 忽略 */
+          }
+          try {
+            disposeHandles();
           } catch {
             /* 忽略 */
           }
