@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 // @ts-check
 /**
  * dsh-mimo-extension — DeepSeek Harness 宿主插件
@@ -118,6 +119,8 @@ function mimoSettingsSchema(input) {
       // 额外为**纯文本**模型补 image（越权，风险自负，默认关）
       visionRoutingTextModels: bool(mimo.visionRoutingTextModels, false),
       visionRoutingAllMimo: bool(mimo.visionRoutingAllMimo, false),
+      // 「MiMo 模式」会话预设：开=把预设写入 ~/.agent-presets；关=移除
+      mimoMode: bool(mimo.mimoMode, false),
       billingTypeOverrides:
         mimo.billingTypeOverrides && typeof mimo.billingTypeOverrides === "object" ? mimo.billingTypeOverrides : {},
       pricing: {
@@ -238,6 +241,7 @@ export function buildFallbackSettingsSchema() {
           visionRouting: { type: "boolean", default: false },
           visionRoutingTextModels: { type: "boolean", default: false },
           visionRoutingAllMimo: { type: "boolean", default: false },
+          mimoMode: { type: "boolean", default: false },
         },
       },
     },
@@ -261,6 +265,7 @@ export function buildMimoSettingsSchema(ctx) {
       visionRouting: factory.boolean().default(false),
       visionRoutingTextModels: factory.boolean().default(false),
       visionRoutingAllMimo: factory.boolean().default(false),
+      mimoMode: factory.boolean().default(false),
       // 动态键（provider 或 provider/model），结构由 mimoSettingsSchema 兜底。
       // 注意 schemastery 的 dict 签名是 dict(值, 键) —— 第一个参数是 inner(值)。
       billingTypeOverrides: factory.dict(factory.any(), factory.string()).default({}),
@@ -1506,6 +1511,7 @@ async function buildSummary(deps, signal, options = {}) {
     visionRouting: mimo.visionRouting === true,
     visionRoutingTextModels: mimo.visionRoutingTextModels === true,
     visionRoutingAllMimo: mimo.visionRoutingAllMimo === true,
+    mimoMode: mimo.mimoMode === true,
   };
 
   // 浏览器半边的自诊断回传（脚本加载 → 工厂 → apply），诊断"装了没生效"
@@ -1965,6 +1971,74 @@ export function apply(ctx, config) {
   //        → 落盘计数器快照 → 内置统计快照 → 空值。
   // 把「默认模型」放第一位，是因为它才是"用户此刻选的是什么"；
   // 事件流的语义是"最近一次真的用过什么"，切了模型但没发消息时会滞后。
+  // ── 「MiMo 模式」会话预设：安装 / 移除 ─────────────────────────────
+  // 预设是**文件**（agent.cordis.yml），放在用户根 `<home>/.agent-presets/`，
+  // 不是运行时注册 —— 所以开关的实现就是"写目录 / 删目录"。
+  // 预设内容 = 官方 PTC 预设 + 1M 上下文自动压缩 owner（0.75/0.22），
+  // 结构参考 dsh-glm-mode 的 glm 预设（MIT，已在生产环境验证）。
+  //
+  // ⚠ 幂等：每次启动 / 开关变化都执行 —— 模板随插件升级更新时，
+  //   已安装的预设也要跟着更新（以插件包内模板为准整目录重写）。
+  const MIMO_PRESET_DIR_NAME = "dsh-mimo-mode";
+
+  /** 定位 DSH home（预设根 `<home>/.agent-presets` 的父目录）。 */
+  function dshHomeDir() {
+    // ① 环境变量（core 进程由应用启动，通常带 DSH_HOME）
+    if (typeof process.env.DSH_HOME === "string" && process.env.DSH_HOME.trim()) {
+      return process.env.DSH_HOME.replace(/\/+$/, "");
+    }
+    // ② 从插件自身位置向上找名为 `profiles` 的目录，取其父级 ——
+    //    无论装在 node_modules 直下还是 pnpm store，都在 dsh-home 之下。
+    try {
+      let cur = new URL(".", import.meta.url).pathname;
+      for (let i = 0; i < 8; i += 1) {
+        try {
+          if (statSync(`${cur}profiles`).isDirectory()) return cur.replace(/\/+$/, "");
+        } catch {}
+        const up = cur.replace(/[^/]+\/$/, "");
+        if (up === cur) break;
+        cur = up;
+      }
+    } catch {
+      /* 忽略 */
+    }
+    return null;
+  }
+
+  deps.syncMimoMode = async () => {
+    const mimo = deps.currentMimo?.() ?? cfg.mimo ?? DEFAULT_CONFIG.mimo;
+    const want = mimo.mimoMode === true;
+    const home = dshHomeDir();
+    if (!home) {
+      ctx.logger?.warn?.("[dsh-mimo-extension] 找不到 DSH home，无法安装「MiMo 模式」预设");
+      return;
+    }
+    const root = `${home.replace(/\/+$/, "")}/.agent-presets`;
+    const dir = `${root}/${MIMO_PRESET_DIR_NAME}`;
+    const fsMod = await import("node:fs");
+    try {
+      if (!want) {
+        if (fsMod.existsSync(dir)) {
+          fsMod.rmSync(dir, { recursive: true, force: true });
+          ctx.logger?.info?.("[dsh-mimo-extension] 已移除「MiMo 模式」预设");
+        }
+        return;
+      }
+      // 模板来自插件包内（随插件升级而更新）
+      const tplDir = new URL("./presets/mimo/", import.meta.url);
+      const tplYaml = readFileSync(new URL("agent.cordis.yml", tplDir), "utf8");
+      const tplMeta = readFileSync(new URL("preset.yml", tplDir), "utf8");
+      fsMod.mkdirSync(dir, { recursive: true });
+      // 已安装的旧版直接整文件重写（模板是唯一事实来源）
+      fsMod.writeFileSync(`${dir}/agent.cordis.yml`, tplYaml, "utf8");
+      fsMod.writeFileSync(`${dir}/preset.yml`, tplMeta, "utf8");
+      ctx.logger?.info?.(`[dsh-mimo-extension] 「MiMo 模式」预设已安装：${dir}`);
+    } catch (error) {
+      ctx.logger?.warn?.(`[dsh-mimo-extension] MiMo 模式预设同步失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+
   deps.modelTracker = createModelTracker(ctx, getCounter, () => deps.localCounter, readDefaultModel);
 
   // ---- 设置持久化（settings.yaml 的 dsh-mimo-extension 命名空间）----
@@ -2041,6 +2115,11 @@ export function apply(ctx, config) {
       // 都会在"拿不到 schemastery"的环境里静默失效（测试抓到过）。
       // 幂等：已经写过就不产生 ops（applyVisionRouting 先比对现状）。
       deps.syncVisionRouting?.().catch(() => {
+        /* 已内部记警告 */
+      });
+
+      // 「MiMo 模式」预设：按开关安装/移除（幂等，模板随插件升级更新）
+      deps.syncMimoMode?.().catch(() => {
         /* 已内部记警告 */
       });
 
@@ -2192,6 +2271,7 @@ export function apply(ctx, config) {
                       visionRouting: m.visionRouting === true,
                       visionRoutingTextModels: m.visionRoutingTextModels === true,
                       visionRoutingAllMimo: m.visionRoutingAllMimo === true,
+                      mimoMode: m.mimoMode === true,
                       billingTypeOverrides: m.billingTypeOverrides ?? {},
                       pricing: m.pricing ?? {},
                       writable: Boolean(userSettings),
@@ -2224,8 +2304,15 @@ export function apply(ctx, config) {
                   if (typeof body.visionRouting === "boolean") patch.visionRouting = body.visionRouting;
                   if (typeof body.visionRoutingTextModels === "boolean") patch.visionRoutingTextModels = body.visionRoutingTextModels;
                   if (typeof body.visionRoutingAllMimo === "boolean") patch.visionRoutingAllMimo = body.visionRoutingAllMimo;
+                  if (typeof body.mimoMode === "boolean") patch.mimoMode = body.mimoMode;
                   await userSettings.update({ mimo: patch });
                   deps.clearOfficialCache?.();   // 设置已保存：官方数据作废
+                  // 「MiMo 模式」开关变化 → 立即安装/移除预设
+                  if (patch.mimoMode !== undefined) {
+                    deps.syncMimoMode?.().catch(() => {
+                      /* 已内部记警告 */
+                    });
+                  }
                   // 视觉路由是**跨命名空间写入**（改的是 llm-pi-ai 的模型声明），
                   // 所以保存后立刻同步一次，并把结果回给界面（失败要能看见原因）。
                   const visionTouched =
