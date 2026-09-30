@@ -370,6 +370,16 @@
     
       "cfg.mimoMode": "MiMo 模式（会话预设）",
       "cfg.mimoModeHint": "安装「MiMo 模式」会话预设：PTC/Code Mode 呈现（工具目录收进一个 run_code，模型写 TypeScript 串多步，省 input token）+ 1M 上下文自动压缩（75% 触发 / 保留 22%）。安装后新建会话，在预设选择器选「MiMo 模式」、模型选 mimo-v2.6-flash。关闭时移除该预设（已选它的会话不受影响）。",
+    
+      "view.legendCache": "缓存命中输入",
+      "view.legendMiss": "未命中输入",
+      "view.legendOut": "输出",
+      "view.modeCompareTitle": "MiMo 模式省不省 Credits",
+      "view.modeCompareLine": "开启前 {bd} 天日均 {before} → 开启后 {ad} 天日均 {after} Credits（{dir}{pct}）",
+      "view.modeCompareNote": "按每日 Credits 估算对比；任务难度、缓存命中率都会影响，趋势仅供参考。",
+      "view.modeCompareNoData": "开启/关闭「MiMo 模式」后会在这里对比切换前后的日均 Credits 消耗。",
+      "view.todayCredits": "今日 (Credits·估)",
+      "view.monthCredits": "本月 (Credits·估)",
     };
     const en = {
       "pill.label": "MiMo quota",
@@ -527,6 +537,16 @@
     
       "cfg.mimoMode": "MiMo mode (session preset)",
       "cfg.mimoModeHint": "Installs the \"MiMo mode\" session preset: PTC/Code Mode presentation (the whole tool catalog collapses into one run_code tool — the model writes TypeScript to chain steps, saving input tokens) plus 1M-context auto-compaction (75% trigger / 22% retention). After installing, start a session, pick \"MiMo mode\" in the preset selector, and set the model to mimo-v2.6-flash. Turning it off removes the preset (sessions already using it are unaffected).",
+    
+      "view.legendCache": "cached input",
+      "view.legendMiss": "uncached input",
+      "view.legendOut": "output",
+      "view.modeCompareTitle": "Does MiMo mode save Credits?",
+      "view.modeCompareLine": "Before: {before}/day over {bd}d → After: {after}/day over {ad}d ({dir}{pct})",
+      "view.modeCompareNote": "Compared from daily Credit estimates; task mix and cache-hit rate both affect it — read as a trend, not a bill.",
+      "view.modeCompareNoData": "After you toggle \"MiMo mode\", the before/after daily Credit comparison will appear here.",
+      "view.todayCredits": "Today (Credits·est)",
+      "view.monthCredits": "This month (Credits·est)",
     };
 
     // 由 apply 注入的本地化函数；未注册时退化为按浏览器语言直查
@@ -1612,6 +1632,8 @@
       // 数据是否为缓存快照（Cookie 过期/接口失败时，宿主用上次成功结果兜底）
       const [stale, setStale] = useState(false);
       const [staleAt, setStaleAt] = useState(null);
+      // 每日 Credits 历史 + 模式时间线（宿主落盘文件，含前后日均对比）
+      const [creditsCompare, setCreditsCompare] = useState(null);
       const epochRef = useRef(0);
 
       // 当前选中的模型（与胶囊同一来源：会话投影 `modelSelection`）。
@@ -1652,6 +1674,7 @@
               setAuthExpired(data?.authExpired === true);
               setStale(data?.stale === true);
               setStaleAt(data?.staleAt ?? null);
+              setCreditsCompare(data?.creditsStats ?? null);
             }
           } catch (e) {
             if (epoch === epochRef.current) setError(e instanceof Error ? e.message : String(e));
@@ -1933,6 +1956,10 @@
       };
       const days = (local?.days ?? []).slice(-14);
       const maxDay = days.length ? Math.max(...days.map((d) => d.tokens), 1) : 1;
+      // Credits 柱的归一化上限（有分项数据时用 Credits 口径）
+      const hasCreditDays = days.some((d) => Number.isFinite(d.credits));
+      // 两套归一化上限：Credits 柱与 tokens 柱各自独立（单位不同，不能共用）
+      const maxCredits = hasCreditDays ? Math.max(...days.map((d) => d.credits ?? 0), 1) : 1;
       const thStyle = {
         textAlign: "left",
         padding: narrow ? "3px 4px" : "3px 6px",
@@ -2542,43 +2569,89 @@
                   h(
                     Row,
                     null,
-                    h(Stat, { label: t("view.today"), value: fmtFull(local.todayTokens), unit: "tokens", accent: true }),
-                    h(Stat, { label: t("view.month"), value: fmtFull(local.monthTokens), unit: "tokens", accent: true }),
+                    // 主指标：Credits 估算（有分项才能算；否则退回 tokens）
+                    local.days.some((d) => Number.isFinite(d.credits))
+                      ? h(Stat, {
+                          label: t("view.todayCredits"),
+                          value: fmtFull(local.days.find((d) => d.date === local.today)?.credits ?? 0),
+                          unit: "Credits·估",
+                          accent: true,
+                        })
+                      : h(Stat, { label: t("view.today"), value: fmtFull(local.todayTokens), unit: "tokens", accent: true }),
+                    local.monthCredits !== undefined
+                      ? h(Stat, { label: t("view.monthCredits"), value: fmtFull(local.monthCredits), unit: "Credits·估", accent: true })
+                      : h(Stat, { label: t("view.month"), value: fmtFull(local.monthTokens), unit: "tokens", accent: true }),
                   ),
                   days.length
                     ? h(
                         "div",
-                        {
-                          style: {
-                            display: "flex",
-                            gap: narrow ? "2px" : "4px",
-                            alignItems: "flex-end",
-                            // ── 柱状图自适应卡片高度 ──────────────────────
-                            // 原先写死 `height: 60px`、柱高按 54px 折算，于是卡片被
-                            // 旁边更高的卡片拉高时，下方就空出一块。
-                            // 现在：容器 flex:1 认领剩余高度（并给一个最小高度兜底），
-                            // 柱高用**百分比**表示（相对容器），于是柱子随卡片长高。
-                            flex: "1 1 auto",
-                            minHeight: narrow ? "46px" : "60px",
-                            overflowX: narrow ? "auto" : undefined,
-                          },
-                        },
-                        days.map((d, i) =>
-                          h("div", {
-                            key: i,
-                            title: `${d.date}：${fmtFull(d.tokens)} tokens`,
+                        { style: { display: "flex", flexDirection: "column", gap: "6px", flex: "1 1 auto", minHeight: 0 } },
+                        // 图例：Credits 堆叠柱的三段含义（仅有分项数据时）
+                        hasCreditDays
+                          ? h(
+                              "div",
+                              { style: { display: "flex", gap: "10px", flexWrap: "wrap", fontSize: "10.5px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
+                              h("span", null, "■ ", t("view.legendCache")),
+                              h("span", null, "■ ", t("view.legendMiss")),
+                              h("span", null, "■ ", t("view.legendOut")),
+                            )
+                          : null,
+                        h(
+                          "div",
+                          {
                             style: {
-                              width: narrow ? "10px" : "15px",
-                              flex: narrow ? "none" : undefined,
-                              // 百分比高度：随容器（=卡片剩余空间）自适应。
-                              // 用 minHeight 保证极小值仍可见（0 值也有一根短线）。
-                              height: `${Math.max(4, Math.round((d.tokens / maxDay) * 100))}%`,
-                              minHeight: "3px",
-                              maxHeight: "100%",
-                              background: "var(--dsw-alias-state-business-primary, #0969da)",
-                              borderRadius: "3px",
-                              opacity: 0.85,
+                              display: "flex",
+                              gap: narrow ? "2px" : "4px",
+                              alignItems: "flex-end",
+                              flex: "1 1 auto",
+                              minHeight: narrow ? "46px" : "60px",
+                              overflowX: narrow ? "auto" : undefined,
                             },
+                          },
+                          days.map((d, i) => {
+                            // Credits 分项 → 每根柱堆叠三段：绿=缓存命中(2/M)、
+                            // 黄=未命中输入(100/M)、蓝=输出(200/M)。
+                            // 一眼看出消耗构成：黄色占大头 = 缓存命中率低。
+                            const hasCredits = Number.isFinite(d.credits);
+                            const parts = hasCredits
+                              ? [
+                                  { v: d.cCache ?? 0, c: "var(--dsw-alias-state-success-primary, #1a7f37)" },
+                                  { v: d.cMiss ?? 0, c: "var(--dsw-alias-state-warning-primary, #d4a72c)" },
+                                  { v: d.cOut ?? 0, c: "var(--dsw-alias-state-business-primary, #0969da)" },
+                                ]
+                              : null;
+                            const pctH = hasCredits
+                              ? Math.max(4, Math.round(((d.credits ?? 0) / maxCredits) * 100))
+                              : Math.max(4, Math.round((d.tokens / maxDay) * 100));
+                            return h(
+                              "div",
+                              {
+                                key: i,
+                                title: hasCredits
+                                  ? `${d.date}：${fmtFull(d.credits)} Credits（命中 ${fmtFull(d.cCache)} / 未命中 ${fmtFull(d.cMiss)} / 输出 ${fmtFull(d.cOut)}）`
+                                  : `${d.date}：${fmtFull(d.tokens)} tokens`,
+                                style: {
+                                  width: narrow ? "10px" : "15px",
+                                  flex: narrow ? "none" : undefined,
+                                  height: `${pctH}%`,
+                                  minHeight: "3px",
+                                  maxHeight: "100%",
+                                  display: "flex",
+                                  flexDirection: "column-reverse",
+                                  gap: "1px",
+                                  borderRadius: "3px",
+                                  overflow: "hidden",
+                                },
+                              },
+                              parts
+                                ? parts.filter((p) => p.v > 0).map((p, kk) =>
+                                    h("div", {
+                                      key: kk,
+                                      style: { flex: `${p.v}`, background: p.c, minHeight: "2px" },
+                                    }),
+                                  )
+                                : null,
+                            );
                           }),
                         ),
                       )
@@ -2676,6 +2749,44 @@
                                   }),
                             )
                           : null,
+                        // ── MiMo 模式省不省 Credits：切换前后日均对比 ──────
+                        creditsCompare?.compare
+                          ? (() => {
+                              const c = creditsCompare.compare;
+                              const saved = c.deltaPct !== null && c.deltaPct < 0;
+                              const pct = c.deltaPct === null ? "—" : `${Math.abs(Math.round(c.deltaPct))}%`;
+                              return h(
+                                "div",
+                                {
+                                  style: {
+                                    marginTop: "10px",
+                                    paddingTop: "10px",
+                                    borderTop: "1px dashed var(--dsw-alias-border-l1, rgba(0,0,0,.08))",
+                                    fontSize: "11px",
+                                    lineHeight: 1.7,
+                                    color: "var(--dsw-alias-label-secondary, #59636e)",
+                                  },
+                                  "data-role": "mimo-mode-compare",
+                                },
+                                h("div", { style: { fontWeight: 600, marginBottom: "2px" } }, t("view.modeCompareTitle")),
+                                h("div", null, t("view.modeCompareLine", {
+                                  before: fmtFull(c.beforeAvg),
+                                  after: fmtFull(c.afterAvg),
+                                  pct,
+                                  dir: saved ? "↓" : "↑",
+                                  bd: c.beforeDays,
+                                  ad: c.afterDays,
+                                })),
+                                h("div", { style: { opacity: 0.8, marginTop: "2px" } }, t("view.modeCompareNote")),
+                              );
+                            })()
+                          : creditsCompare && creditsCompare.modeTimeline?.length
+                            ? h(
+                                "div",
+                                { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)", marginTop: "8px" } },
+                                t("view.modeCompareNoData"),
+                              )
+                            : null,
                       )
                     : null,
                 )

@@ -447,6 +447,41 @@ export function planStatusOf(ok, raw, parsed) {
  * 官方 `tokenPlan/usage` 返回的 `items[].name` 是字段键（如 `month_total_token`），
  * 直接展示会很突兀。这里映射成可读文案，未知键原样保留。
  */
+/**
+ * MiMo 模型的 Credits 倍率表（每百万 token），来自官方文档「用量与额度」。
+ * 用于把本地 token 计数**估算**成 Credits —— 精度受缓存命中率与模型构成影响，
+ * 结论只用于趋势对比，不做账单依据。
+ */
+const MIMO_CREDIT_RATES = {
+  "mimo-v2.6-pro": { cache: 2.5, miss: 300, out: 600 },
+  "mimo-v2.6-flash": { cache: 2, miss: 100, out: 200 },
+  "mimo-v2.5-pro": { cache: 2.5, miss: 300, out: 600 },
+  "mimo-v2.5": { cache: 2, miss: 100, out: 200 },
+};
+const MIMO_CREDIT_DEFAULT = { cache: 2, miss: 100, out: 200 };
+
+/**
+ * 一条 usage 的 Credits 估算。
+ * 口径：官方把「输入」拆成命中缓存/未命中两档分别计价；本地计数的
+ * `inputTokens` 不含缓存命中（total = input+output+cacheRead+cacheWrite），
+ * 所以未命中输入 = input + cacheWrite；非小米模型返回 0（不烧 MiMo 额度）。
+ * 夜间 0.8x 系数未建模（时段相关，摘要里注明）。
+ */
+export function estimateCredits(provider, model, usage) {
+  if (!isMiMoBaseURL(builtinBaseURL(provider)) && !/mimo/i.test(`${provider}/${model}`)) {
+    return { total: 0, cache: 0, miss: 0, out: 0 };
+  }
+  const rates = MIMO_CREDIT_RATES[String(model).toLowerCase()] ?? MIMO_CREDIT_DEFAULT;
+  const input = Number(usage?.inputTokens) || 0;
+  const cacheRead = Number(usage?.cacheReadTokens) || 0;
+  const cacheWrite = Number(usage?.cacheWriteTokens) || 0;
+  const output = Number(usage?.outputTokens) || 0;
+  const cCache = (cacheRead / 1e6) * rates.cache;
+  const cMiss = ((input + cacheWrite) / 1e6) * rates.miss;
+  const cOut = (output / 1e6) * rates.out;
+  return { total: cCache + cMiss + cOut, cache: cCache, miss: cMiss, out: cOut };
+}
+
 const PLAN_ITEM_LABELS = {
   month_total_token: "本月套餐额度",
   plan_total_token: "套餐总额度",
@@ -703,11 +738,18 @@ export function createLocalUsageCounter(ctx) {
     return total;
   };
 
-  const noteDay = (time, tokens) => {
+  // 每日 Credits 三分量（缓存命中/未命中输入/输出），堆叠图与日均对比用
+  const noteDay = (time, tokens, credits) => {
     const date = dateKeyOf(time);
-    const hit = dayMap.get(date) ?? { date, tokens: 0, calls: 0 };
+    const hit = dayMap.get(date) ?? { date, tokens: 0, calls: 0, credits: 0, cCache: 0, cMiss: 0, cOut: 0 };
     hit.tokens += tokens;
     hit.calls += 1;
+    if (credits) {
+      hit.credits = (hit.credits ?? 0) + credits.total;
+      hit.cCache = (hit.cCache ?? 0) + credits.cache;
+      hit.cMiss = (hit.cMiss ?? 0) + credits.miss;
+      hit.cOut = (hit.cOut ?? 0) + credits.out;
+    }
     dayMap.set(date, hit);
   };
 
@@ -773,7 +815,7 @@ export function createLocalUsageCounter(ctx) {
     entry.calls += 1;
     rec.models.set(key, entry);
 
-    noteDay(ev.time, total);
+    noteDay(ev.time, total, estimateCredits(provider, model, usage));
     noteModel(key, total);
   };
 
@@ -900,6 +942,10 @@ export function createLocalUsageCounter(ctx) {
       const days = [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date));
       return {
         monthTokens: days.reduce((sum, d) => sum + d.tokens, 0),
+        // 本月 Credits 估算（days[] 里带 credits 的才有；本地会话事件路径）
+        monthCredits: days.some((d) => Number.isFinite(d.credits))
+          ? days.reduce((sum, d) => sum + (d.credits ?? 0), 0)
+          : undefined,
         todayTokens: dayMap.get(todayKey)?.tokens ?? 0,
         today: todayKey,
         days,
@@ -1343,6 +1389,100 @@ export function billingTypeFor(mimo, provider, model, planStatus = "unknown", ba
   return "payg";
 }
 
+/** 每日 Credits 聚合的落盘路径（`<home>/dsh-mimo-extension/daily-credits.json`）。 */
+function dailyCreditsFilePath() {
+  let home = typeof process.env.DSH_HOME === "string" ? process.env.DSH_HOME.replace(/\/+$/, "") : "";
+  if (!home) {
+    // 与 apply 层同样的走查：向上找 `profiles` 目录的父级
+    try {
+      let cur = new URL(".", import.meta.url).pathname;
+      for (let i = 0; i < 8; i += 1) {
+        try {
+          if (statSync(`${cur}profiles`).isDirectory()) { home = cur.replace(/\/+$/, ""); break; }
+        } catch { /* 继续向上 */ }
+        const up = cur.replace(/[^/]+\/$/, "");
+        if (up === cur) break;
+        cur = up;
+      }
+    } catch { /* 忽略 */ }
+  }
+  return home ? `${home}/dsh-mimo-extension/daily-credits.json` : null;
+}
+
+/**
+ * 每日 Credits 聚合落盘（60s 节流）。
+ *
+ * 为什么需要：本地 days 来自存活会话重算，会话删除/重启即丢历史；
+ * 而「MiMo 模式省不省 Credits」是**跨天趋势**问题，必须有稳定历史。
+ * 同日条目被本地重算覆盖（重算是全量真相），更早的历史只增不减。
+ * 同时记录 mimoMode 开关时间线 —— 那是前后对比的时段边界。
+ */
+function persistDailyCreditsSync(summary) {
+  const file = dailyCreditsFilePath();
+  if (!file) return;
+  let store = { days: {}, modeTimeline: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (parsed && typeof parsed === "object") {
+      store.days = parsed.days && typeof parsed.days === "object" ? parsed.days : {};
+      if (Array.isArray(parsed.modeTimeline)) store.modeTimeline = parsed.modeTimeline;
+    }
+  } catch { /* 首次或损坏 → 从空开始 */ }
+  for (const d of summary?.local?.days ?? []) {
+    if (d?.date) {
+      store.days[d.date] = {
+        tokens: d.tokens ?? 0, calls: d.calls ?? 0,
+        credits: d.credits ?? 0, cCache: d.cCache ?? 0, cMiss: d.cMiss ?? 0, cOut: d.cOut ?? 0,
+      };
+    }
+  }
+  const on = summary?.mimoMode === true;
+  const tl = store.modeTimeline;
+  if (!tl.length || tl[tl.length - 1].on !== on) {
+    tl.push({ at: Date.now(), on });
+    if (tl.length > 200) store.modeTimeline = tl.slice(-200);
+  }
+  try {
+    mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true });
+    writeFileSync(file, JSON.stringify(store));
+  } catch { /* 落盘失败不影响 summary */ }
+}
+
+/**
+ * 读历史并算「MiMo 模式开启前后」的日均 Credits 对比。
+ * 样本要求：开启前 ≥2 天、开启后 ≥1 天 —— 否则不给结论（避免用单日噪声下判断）。
+ */
+function loadCreditsStats() {
+  const file = dailyCreditsFilePath();
+  if (!file) return null;
+  let store;
+  try {
+    store = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  const days = store?.days && typeof store.days === "object" ? store.days : {};
+  const tl = Array.isArray(store?.modeTimeline) ? store.modeTimeline : [];
+  if (!tl.length) return { days, modeTimeline: tl, compare: null };
+  const lastOn = [...tl].reverse().find((e) => e.on === true);
+  if (!lastOn) return { days, modeTimeline: tl, compare: null };
+  const startDate = new Date(lastOn.at).toISOString().slice(0, 10);
+  const before = [];
+  const after = [];
+  for (const [date, d] of Object.entries(days)) {
+    if (!Number.isFinite(d?.credits)) continue;
+    (date < startDate ? before : after).push(d.credits);
+  }
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+  const beforeAvg = avg(before);
+  const afterAvg = avg(after);
+  const compare = beforeAvg !== null && afterAvg !== null && before.length >= 2 && after.length >= 1
+    ? { startDate, beforeDays: before.length, afterDays: after.length, beforeAvg, afterAvg,
+        deltaPct: beforeAvg > 0 ? ((afterAvg - beforeAvg) / beforeAvg) * 100 : null }
+    : null;
+  return { days, modeTimeline: tl, compare };
+}
+
 /**
  * 汇总 MiMo 状态（胶囊与详情页共用）。
  * @param {object} deps - { ctx, cfg, getCounter }
@@ -1519,6 +1659,11 @@ async function buildSummary(deps, signal, options = {}) {
   result.clientLog = deps.clientLog ?? [];
 
   result.updatedAt = Date.now();
+    // 每日 Credits 落盘（节流）+ 给前端的历史/对比数据
+  try {
+    persistDailyCreditsSync(result);
+  } catch { /* 落盘失败不影响 summary */ }
+  result.creditsStats = loadCreditsStats();
   return result;
 }
 
@@ -1980,6 +2125,22 @@ export function apply(ctx, config) {
   // ⚠ 幂等：每次启动 / 开关变化都执行 —— 模板随插件升级更新时，
   //   已安装的预设也要跟着更新（以插件包内模板为准整目录重写）。
   const MIMO_PRESET_DIR_NAME = "dsh-mimo-mode";
+
+  // ── 每日 Credits 聚合的持久化 ──────────────────────────────────────
+  // 本地 days 来自存活会话的重算：会话删除/重启会丢历史。趋势对比需要
+  // 稳定历史，所以每天一行落盘（当天滚动覆盖，历史天只增不减），
+  // 同时记录「MiMo 模式」开关时间线（对比的时段边界）。
+
+  function dailyCreditsPath() {
+    const home = dshHomeDir();
+    return home ? `${home.replace(/\/+$/, "")}/${DAILY_CREDITS_REL}` : null;
+  }
+
+  /** 把内存里的每日聚合 + 时间线合并落盘（60s 节流；summary 构建时调用）。 */
+
+
+  /** 读落盘的完整历史（含本地重算覆盖不到的旧天），并算出模式前后日均。 */
+
 
   /** 定位 DSH home（预设根 `<home>/.agent-presets` 的父目录）。 */
   function dshHomeDir() {
