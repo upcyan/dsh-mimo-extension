@@ -14,6 +14,8 @@
 
 import { readFileSync } from "node:fs";
 
+import { scanUndeclared, describeUndeclared } from "./undeclared-scan.mjs";
+
 const pass = [];
 const fail = [];
 const ok = (cond, label) => (cond ? pass.push(label) : fail.push(label));
@@ -471,6 +473,14 @@ for (const scene of SCENARIOS) {
       const out = new Set();
       for (const m of body.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) out.add(m[1]);
       for (const m of body.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) out.add(m[1]);
+      // 🔴 数组解构必须单独认：`const [summary, setSummary] = useState(...)`
+      //    `const` 后面跟的是 `[` 而不是名字 → 上面那条正则**一个都收不到**。
+      //    漏了它，所有 state 名（含 setter）都不算"本函数声明过"，
+      //    于是跨作用域检查里 `others` 也永远收不到它们 → 对 state 名**完全失明**
+      //    （实测：把胶囊里的 `setSummary` 声明删掉、详情页那处留着，
+      //     本检查照样 ✓ —— 因为这属于跨作用域，本该由它拦住）。
+      for (const m of body.matchAll(/\b(?:const|let|var)\s*\[([^\]]*)\]\s*=/g))
+        for (const n of m[1].split(",")) { const t = n.trim().split(/[=:]/)[0].trim(); if (/^[A-Za-z_$][\w$]*$/.test(t)) out.add(t); }
       for (const m of body.matchAll(/\b(?:const|let|var)\s*\{([^}]*)\}\s*=/g))
         for (const n of m[1].split(",")) { const t = n.split(":").pop().trim().split("=")[0].trim(); if (/^[A-Za-z_$][\w$]*$/.test(t)) out.add(t); }
       for (const m of body.matchAll(/\(([^()]*)\)\s*=>/g))
@@ -499,7 +509,10 @@ for (const scene of SCENARIOS) {
         .replace(/`(?:\\.|[^`\\])*`/g, '""')
         .replace(/'(?:\\.|[^'\\])*'/g, '""')
         .replace(/"(?:\\.|[^"\\])*"/g, '""');
-      for (const m of stripped.matchAll(/(?<![.\w$])([a-z][A-Za-z0-9_$]*)\s*(?=[^\w$]*[),.;\]}:]|\s)/g)) {
+      // 🔴 字符类里必须有 `(`：函数**调用**形态 `setSummary(data)` 后面跟的是 `(`，
+      //    漏了它这一整类引用都看不见（实测：胶囊少一处 state 声明、
+      //    详情页那处还在 → 属于跨作用域，本检查却照样 ✓）。
+      for (const m of stripped.matchAll(/(?<![.\w$])([a-z][A-Za-z0-9_$]*)\s*(?=[^\w$]*[(),.;\]}:]|\s)/g)) {
         const n = m[1];
         if (!/[a-z][A-Z]/.test(n) || n.length < 8) continue;   // 只查驼峰式多词名
         if (others.has(n) && !params.has(n) && !f.own.has(n) && !moduleLevel.has(n)) {
@@ -509,6 +522,29 @@ for (const scene of SCENARIOS) {
     }
     ok(crossRefs.length === 0,
       `★ 无跨作用域变量引用（会致整页空白）${crossRefs.length ? `：${[...new Set(crossRefs)].join("，")}` : ""}`);
+  }
+
+  // ---------- 组件体引用「全文件都没声明」的 setXxx（09-30 姊妹项目事故 → 本项兜住）----------
+  // 症状：详情页整页打不开（`slot entry crashed in 'conversation.view'`），
+  //   而 `node --check` 通过（缺声明不是语法错）、正则断言与 mock createElement
+  //   全绿（桩函数**永不执行组件体**）→ 只有真渲染才现形。
+  //   姊妹项目 dsh-usage-cyanmod 就是这么炸的：补丁脚本中途退出，只写了一半的
+  //   `confirmLayer`，`useState` 那三行没写进去 → 每次渲染抛 ReferenceError，
+  //   同一槽位里所有组件跟着一起消失。
+  //
+  // ⚠ 与上面那条跨作用域检查**分工不同**（两条都要，别互相替代）：
+  //   上面查"声明在**别的函数**里"，本项查"**全文件都没声明**"。
+  //   事故当天恰好是后者 —— 名字哪里都没声明 ⇒ 不在"别人的声明"集合里 ⇒
+  //   跨作用域检查完全看不见（在姊妹项目上实测：删掉那三行，跨作用域检查照样 ✓）。
+  //   判定与阈值说明见 `undeclared-scan.mjs` 顶部。
+  {
+    const raw = readFileSync(new URL("./client.js", import.meta.url), "utf8");
+    const { seen, bad, declaredCount } = scanUndeclared(raw);
+    // 覆盖断言：防"规则失效 → 什么都没扫到 → 静默变绿"（verify-scope 踩过这脚）
+    ok(declaredCount >= 100,
+      `client.js 未声明扫描生效（收集到 ${declaredCount} 个声明名、${seen.size} 种 setXxx）`);
+    ok(bad.size === 0,
+      `★ 无引用未声明的 setXxx（缺声明会让整槽组件一起消失）${bad.size ? `：${describeUndeclared(bad)}` : ""}`);
   }
 
   for (const k of ["cfg.visionTextModels","cfg.visionTextModelsHint"]) {

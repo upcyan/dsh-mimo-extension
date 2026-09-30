@@ -12,6 +12,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 
+import { scanUndeclared, describeUndeclared } from "./undeclared-scan.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const fail = [];
 const pass = [];
@@ -1067,6 +1069,25 @@ if (loaded) {
   ok(bt({}, "xiaomi", "m", "unknown", "https://api.xiaomimimo.com/v1") === "payg", "provider xiaomi + 按量地址 → payg");
   ok(bt({}, "mimo", "x", "unknown", "") === "token-plan", "地址读不到时回退到名称/套餐状态");
   ok(bt({}, "", "", "unknown", "") === "payg", "全部信号缺失 → 按量这个保守默认");
+}
+
+// ---------- host.js 引用「全文件都没声明」的 setXxx（09-30 加）----------
+// 姊妹项目 dsh-usage-cyanmod 的事故（补丁只写了一半 → 组件每次渲染抛
+// ReferenceError → 整槽崩溃）在 host 半同样成立，只是症状不同：host.js 里
+// 少写一行声明，表现为 `/summary` 直接 500。
+// 本项目真有先例：`loadCreditsStats` 引用了只声明在 settings inject 回调里的
+// `dshHomeDir` → `/summary` 500 `loadCreditsStats is not defined`。
+// 那一类是"声明在**别的函数**里"（`pwtest/dsh-mimo-extension/verify-scope.mjs`
+// 负责）；本项查的是"**全文件都没声明**"，两者分工不同、都要有。
+// 判定与阈值说明见 `undeclared-scan.mjs` 顶部。
+{
+  const raw = readFileSync(join(here, "host.js"), "utf8");
+  const { seen, bad, declaredCount } = scanUndeclared(raw);
+  // 覆盖断言：防"规则失效 → 什么都没扫到 → 静默变绿"
+  ok(declaredCount >= 100,
+    `host.js 未声明扫描生效（收集到 ${declaredCount} 个声明名、${seen.size} 种 setXxx）`);
+  ok(bad.size === 0,
+    `★ 无引用未声明的 setXxx（缺声明会让 /summary 500）${bad.size ? `：${describeUndeclared(bad)}` : ""}`);
 }
 
 // ---------- 输出 ----------
