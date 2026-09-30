@@ -815,6 +815,24 @@ if (loaded) {
     ok(!/unset.*LEGACY_SETTINGS_NS|delete.*legacy/i.test(src), "不删除旧段（留作回滚依据）");
   }
 
+  // ---------- 启动同步顺序（09-28：预设"出现后又消失"）----------
+  // 同步读的是 currentMimo()（用户层），而 userSettings 在 register 才赋值。
+  // 同步调用若在 register 之前，currentMimo 回退 patch 配置（无这些开关）
+  // → want 恒 false → 每次重启删除已装的预设 / 剥掉已声明的 image。
+  {
+    // 自包含读取：本块位于外层 `src` 声明之前（TDZ），不能引用外层变量
+    const lines = readFileSync(join(here, "host.js"), "utf8").split("\n");
+    const findLine = (re) => lines.findIndex((l) => re.test(l));
+    const regLine = findLine(/userSettings = scope;/);
+    const visLine = findLine(/deps\.syncVisionRouting\?\.\(\)/);
+    const modeLine = findLine(/deps\.syncMimoMode\?\.\(\)/);
+    ok(regLine > 0 && visLine > regLine && modeLine > regLine,
+      `★ 启动同步必须在 register 之后（register@${regLine + 1}，vision@${visLine + 1}，mimoMode@${modeLine + 1}）`);
+    // POST 处的同步天然在 register 后，不受影响
+    ok(lines.some((l) => /deps\.syncMimoMode\?\.\(\)/.test(l) && lines.indexOf(l) > modeLine),
+      "设置变更后的同步仍在（POST 路径）");
+  }
+
   // ---------- 视觉路由覆盖自建小米渠道（09-28 用户反馈）----------
   // 用户开了开关，往自建 `mimo` 渠道（baseURL 指向 xiaomimimo.com）贴图仍被拒 ——
   // 因为静态表只认内置渠道名。现在动态发现同源地址的自建渠道。
@@ -883,11 +901,15 @@ if (loaded) {
     ok(/cur\.filter\(\(x\) => x !== "image"\)/.test(src), "关闭时去掉 image");
     ok(/\? cur\.filter\(\(x\) => x !== "image"\)\s*\n\s*: \["text"\]/.test(src),
       "回收后为空则补回 text（避免空数组）");
-    // ⚠ 启动同步的位置：必须在 schemastery 判空之前
+    // ⚠ 启动同步的位置：必须在 register 之后（09-28 修正，见下方断言）
     const syncIdx = src.indexOf("deps.syncVisionRouting?.()");
-    const schemaIdx = src.indexOf("const schema = buildMimoSettingsSchema(settingsCtx)");
-    ok(syncIdx > 0 && schemaIdx > 0 && syncIdx < schemaIdx,
-      "★ 启动同步在 schemastery 判空**之前**（否则该环境里开关静默失效）");
+    // 09-28 修正：同步顺序的锚从「schema 判空之前」改为「register 之后」——
+    // 兜底 schema 引入后注册必定发生，而同步必须读到**用户层**偏好
+    //（userSettings 在 register 才赋值；放前面会读到 patch 层 → want 恒 false
+    // → 每次重启删除已装的「MiMo 模式」预设 / 剥掉 image 声明，用户实测踩到）。
+    const regIdx2 = src.indexOf("userSettings = scope;");
+    ok(syncIdx > 0 && regIdx2 > 0 && syncIdx > regIdx2,
+      "★ 启动同步在 register **之后**（否则读到 patch 层，开关全部失效）");
     ok(/visionRouting: bool\(mimo\.visionRouting, false\)/.test(src), "normalize 支持 visionRouting");
     ok(/visionRouting: factory\.boolean\(\)\.default\(false\)/.test(src), "schema 支持 visionRouting（默认关）");
     ok(/visionChanged: vision\.changed/.test(src) && /visionError: vision\.error/.test(src),

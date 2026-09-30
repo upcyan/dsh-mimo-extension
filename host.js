@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 // @ts-check
 /**
  * dsh-mimo-extension — DeepSeek Harness 宿主插件
@@ -2005,38 +2005,7 @@ export function apply(ctx, config) {
     return null;
   }
 
-  deps.syncMimoMode = async () => {
-    const mimo = deps.currentMimo?.() ?? cfg.mimo ?? DEFAULT_CONFIG.mimo;
-    const want = mimo.mimoMode === true;
-    const home = dshHomeDir();
-    if (!home) {
-      ctx.logger?.warn?.("[dsh-mimo-extension] 找不到 DSH home，无法安装「MiMo 模式」预设");
-      return;
-    }
-    const root = `${home.replace(/\/+$/, "")}/.agent-presets`;
-    const dir = `${root}/${MIMO_PRESET_DIR_NAME}`;
-    const fsMod = await import("node:fs");
-    try {
-      if (!want) {
-        if (fsMod.existsSync(dir)) {
-          fsMod.rmSync(dir, { recursive: true, force: true });
-          ctx.logger?.info?.("[dsh-mimo-extension] 已移除「MiMo 模式」预设");
-        }
-        return;
-      }
-      // 模板来自插件包内（随插件升级而更新）
-      const tplDir = new URL("./presets/mimo/", import.meta.url);
-      const tplYaml = readFileSync(new URL("agent.cordis.yml", tplDir), "utf8");
-      const tplMeta = readFileSync(new URL("preset.yml", tplDir), "utf8");
-      fsMod.mkdirSync(dir, { recursive: true });
-      // 已安装的旧版直接整文件重写（模板是唯一事实来源）
-      fsMod.writeFileSync(`${dir}/agent.cordis.yml`, tplYaml, "utf8");
-      fsMod.writeFileSync(`${dir}/preset.yml`, tplMeta, "utf8");
-      ctx.logger?.info?.(`[dsh-mimo-extension] 「MiMo 模式」预设已安装：${dir}`);
-    } catch (error) {
-      ctx.logger?.warn?.(`[dsh-mimo-extension] MiMo 模式预设同步失败：${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
+;
 
 
   deps.modelTracker = createModelTracker(ctx, getCounter, () => deps.localCounter, readDefaultModel);
@@ -2114,15 +2083,6 @@ export function apply(ctx, config) {
       // 放在 register 之后、或放在 `if (!schema) return` 之后，
       // 都会在"拿不到 schemastery"的环境里静默失效（测试抓到过）。
       // 幂等：已经写过就不产生 ops（applyVisionRouting 先比对现状）。
-      deps.syncVisionRouting?.().catch(() => {
-        /* 已内部记警告 */
-      });
-
-      // 「MiMo 模式」预设：按开关安装/移除（幂等，模板随插件升级更新）
-      deps.syncMimoMode?.().catch(() => {
-        /* 已内部记警告 */
-      });
-
       // schema 优先用真 schemastery（自带 secret 标记与完整元数据）；
       // 拿不到时退到**兜底 schema**，只为让注册成功 ——
       // 注册成功才有写权限，否则连改名迁移都写不进来（见 buildFallbackSettingsSchema）。
@@ -2138,6 +2098,44 @@ export function apply(ctx, config) {
       scope.watch(() => {
         deps.clearOfficialCache?.();   // Cookie 改了：官方数据必须重取
       });
+
+      // 「MiMo 模式」预设：按开关安装/移除。
+      // 🔴 定义在**这里**（register 之后）而不是 apply 层：
+      //    它要读的偏好必须来自**用户层**（`scope.get()`），而 apply 层的
+      //    `deps.currentMimo` 赋值在 inject 回调**之后** —— cordis 在服务
+      //    已就绪时会**同步执行**本回调，那一刻 deps.currentMimo 还是
+      //    undefined → 回退 patch 层 → want 恒 false → **每次重启都会
+      //    删掉已安装的预设**（用户实测：预设"出现后又消失"）。
+      //    闭包 scope 直接读已注册的解析值，不依赖赋值顺序。
+      deps.syncMimoMode = async () => {
+        const want = scope.get()?.mimo?.mimoMode === true;
+        const home = dshHomeDir();
+        if (!home) {
+          ctx.logger?.warn?.("[dsh-mimo-extension] 找不到 DSH home，无法安装「MiMo 模式」预设");
+          return;
+        }
+        const root = `${home.replace(/\/+$/, "")}/.agent-presets`;
+        const dir = `${root}/${MIMO_PRESET_DIR_NAME}`;
+        try {
+          if (!want) {
+            if (existsSync(dir)) {
+              rmSync(dir, { recursive: true, force: true });
+              ctx.logger?.info?.("[dsh-mimo-extension] 已移除「MiMo 模式」预设");
+            }
+            return;
+          }
+          // 模板来自插件包内（随插件升级而更新）——整文件重写，模板是唯一事实来源
+          const tplDir = new URL("./presets/mimo/", import.meta.url);
+          const tplYaml = readFileSync(new URL("agent.cordis.yml", tplDir), "utf8");
+          const tplMeta = readFileSync(new URL("preset.yml", tplDir), "utf8");
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(`${dir}/agent.cordis.yml`, tplYaml, "utf8");
+          writeFileSync(`${dir}/preset.yml`, tplMeta, "utf8");
+          ctx.logger?.info?.(`[dsh-mimo-extension] 「MiMo 模式」预设已安装：${dir}`);
+        } catch (error) {
+          ctx.logger?.warn?.(`[dsh-mimo-extension] MiMo 模式预设同步失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
 
       // 迁移调用**不在这里** —— 见下方独立的 inject 块。
       // 放在这里会有两个坑：
@@ -2175,6 +2173,21 @@ export function apply(ctx, config) {
         /* 迁移失败不影响插件启动 */
       });
   });
+
+      // ── 启动同步（顺序敏感！）──────────────────────────────────────
+      // 🔴 **必须在 register 之后**：两个同步都经 `currentMimo()` 读用户层，
+      //    而 `userSettings` 要到上面 register 才赋值。放在 register 之前时
+      //    currentMimo 回退到 **patch 配置**（里面没有这些开关）→
+      //    want 恒为 false → 每次重启都会**删掉已装的 MiMo 模式预设**
+      //    （用户实测：预设"出现后又消失"）。
+      //    旧版曾要求"视觉同步必须在 schema 判空之前"——那是在引入兜底
+      //    schema 之前；现在注册必定发生，顺序以本注释为准。
+      deps.syncVisionRouting?.().catch(() => {
+        /* 已内部记警告 */
+      });
+      deps.syncMimoMode?.().catch(() => {
+        /* 已内部记警告 */
+      });
 
   /** 用户层设置合并后的 mimo 配置（用户层 > patch config）。 */
   const currentMimo = () => {
