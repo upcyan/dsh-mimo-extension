@@ -374,6 +374,7 @@
       "view.legendCache": "缓存命中输入",
       "view.legendMiss": "未命中输入",
       "view.legendOut": "输出",
+      "view.legendHint": "点击高亮该分段（再点取消）",
       "view.modeCompareTitle": "MiMo 模式省不省 Credits",
       "view.modeCompareLine": "开启前 {bd} 天日均 {before} → 开启后 {ad} 天日均 {after} Credits（{dir}{pct}）",
       "view.modeCompareNote": "按每日 Credits 估算对比；任务难度、缓存命中率都会影响，趋势仅供参考。",
@@ -543,6 +544,7 @@
       "view.legendCache": "cached input",
       "view.legendMiss": "uncached input",
       "view.legendOut": "output",
+      "view.legendHint": "Click to highlight this segment (click again to clear)",
       "view.modeCompareTitle": "Does MiMo mode save Credits?",
       "view.modeCompareLine": "Before: {before}/day over {bd}d → After: {after}/day over {ad}d ({dir}{pct})",
       "view.modeCompareNote": "Compared from daily Credit estimates; task mix and cache-hit rate both affect it — read as a trend, not a bill.",
@@ -1638,6 +1640,9 @@
       const [staleAt, setStaleAt] = useState(null);
       // 每日 Credits 历史 + 模式时间线（宿主落盘文件，含前后日均对比）
       const [creditsCompare, setCreditsCompare] = useState(null);
+      // 图例点选：高亮堆叠柱里的某一段（"变大一圈"），再点同项取消。
+      // 纯展示态，不影响任何请求；放在其它 useState 之后、任何提前 return 之前。
+      const [legendPick, setLegendPick] = useState(null);
       const epochRef = useRef(0);
 
       // 当前选中的模型（与胶囊同一来源：会话投影 `modelSelection`）。
@@ -1964,6 +1969,21 @@
       const hasCreditDays = days.some((d) => Number.isFinite(d.credits));
       // 两套归一化上限：Credits 柱与 tokens 柱各自独立（单位不同，不能共用）
       const maxCredits = hasCreditDays ? Math.max(...days.map((d) => d.credits ?? 0), 1) : 1;
+      // 🔴 三段颜色的**唯一来源**：图例色块与柱子分段都从这里取。
+      // 曾各自写一份 —— 图例只是文字里的 "■"（用整行的 tertiary 文字色 = 三块全灰），
+      // 柱段却各是绿/黄/蓝 ⇒ 用户看不出哪块对哪段（"根本没对应上柱状图上的颜色"）。
+      // 拆成两份就一定会再次漂移，所以只留这一个 map。
+      const CREDIT_COLORS = {
+        cache: "var(--dsw-alias-state-success-primary, #1a7f37)",
+        miss: "var(--dsw-alias-state-warning-primary, #d4a72c)",
+        out: "var(--dsw-alias-state-business-primary, #0969da)",
+      };
+      // 顺序 = 柱内堆叠顺序（column-reverse 时自上而下为 输出 → 未命中 → 缓存命中）
+      const CREDIT_LEGEND = [
+        ["cache", t("view.legendCache")],
+        ["miss", t("view.legendMiss")],
+        ["out", t("view.legendOut")],
+      ];
       const thStyle = {
         textAlign: "left",
         padding: narrow ? "3px 4px" : "3px 6px",
@@ -2594,10 +2614,42 @@
                         hasCreditDays
                           ? h(
                               "div",
-                              { style: { display: "flex", gap: "10px", flexWrap: "wrap", fontSize: "10.5px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
-                              h("span", null, "■ ", t("view.legendCache")),
-                              h("span", null, "■ ", t("view.legendMiss")),
-                              h("span", null, "■ ", t("view.legendOut")),
+                              { style: { display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center", fontSize: "10.5px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
+                              // 可点击的图例项：色块直接取 CREDIT_COLORS[k]（与柱段同源）；
+                              // 点一下 = 高亮该分段（变大一圈）、其余压暗；再点同项取消。
+                              ...CREDIT_LEGEND.map(([k, label]) =>
+                                h(
+                                  "span",
+                                  {
+                                    key: k,
+                                    role: "button",
+                                    "aria-pressed": legendPick === k,
+                                    title: t("view.legendHint"),
+                                    onClick: () => setLegendPick((prev) => (prev === k ? null : k)),
+                                    style: {
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "5px",
+                                      cursor: "pointer",
+                                      padding: "1px 7px",
+                                      borderRadius: "999px",
+                                      border: `1px solid ${legendPick === k ? CREDIT_COLORS[k] : "transparent"}`,
+                                      background: legendPick === k ? "var(--dsw-alias-bg-layer-2, rgba(0,0,0,.04))" : "transparent",
+                                      color:
+                                        legendPick === k
+                                          ? "var(--dsw-alias-label-primary, #1f2328)"
+                                          : "var(--dsw-alias-label-tertiary, #59636e)",
+                                      fontWeight: legendPick === k ? 650 : 400,
+                                      opacity: legendPick && legendPick !== k ? 0.6 : 1,
+                                      userSelect: "none",
+                                    },
+                                  },
+                                  h("span", {
+                                    style: { width: "9px", height: "9px", borderRadius: "2px", flex: "none", background: CREDIT_COLORS[k] },
+                                  }),
+                                  label,
+                                ),
+                              ),
                               // 说明夜间折扣已建模 —— 否则用户自己按倍率算会对不上
                               h(
                                 "span",
@@ -2625,9 +2677,9 @@
                             const hasCredits = Number.isFinite(d.credits);
                             const parts = hasCredits
                               ? [
-                                  { v: d.cCache ?? 0, c: "var(--dsw-alias-state-success-primary, #1a7f37)" },
-                                  { v: d.cMiss ?? 0, c: "var(--dsw-alias-state-warning-primary, #d4a72c)" },
-                                  { v: d.cOut ?? 0, c: "var(--dsw-alias-state-business-primary, #0969da)" },
+                                  { k: "cache", v: d.cCache ?? 0 },
+                                  { k: "miss", v: d.cMiss ?? 0 },
+                                  { k: "out", v: d.cOut ?? 0 },
                                 ]
                               : null;
                             const pctH = hasCredits
@@ -2638,7 +2690,7 @@
                               {
                                 key: i,
                                 title: hasCredits
-                                  ? `${d.date}：${fmtFull(d.credits)} Credits（命中 ${fmtFull(d.cCache)} / 未命中 ${fmtFull(d.cMiss)} / 输出 ${fmtFull(d.cOut)}）`
+                                  ? `${d.date}：${fmtFull(d.credits)} Credits（${t("view.legendCache")} ${fmtFull(d.cCache)} / ${t("view.legendMiss")} ${fmtFull(d.cMiss)} / ${t("view.legendOut")} ${fmtFull(d.cOut)}）`
                                   : `${d.date}：${fmtFull(d.tokens)} tokens`,
                                 style: {
                                   width: narrow ? "10px" : "15px",
@@ -2650,17 +2702,40 @@
                                   flexDirection: "column-reverse",
                                   gap: "1px",
                                   borderRadius: "3px",
-                                  overflow: "hidden",
+                                  // 点选高亮时放开裁剪，让选中段的外圈光晕能溢出
+                                  //（未选中态照旧 hidden 保住圆角裁剪）
+                                  overflow: legendPick ? "visible" : "hidden",
+                                  position: legendPick ? "relative" : undefined,
+                                  zIndex: legendPick ? 1 : undefined,
                                 },
                               },
                               parts
                                 ? parts.filter((p) => p.v > 0).map((p, kk) =>
                                     h("div", {
                                       key: kk,
-                                      style: { flex: `${p.v}`, background: p.c, minHeight: "2px" },
+                                      style: {
+                                        flex: `${p.v}`,
+                                        background: CREDIT_COLORS[p.k],
+                                        minHeight: "2px",
+                                        // ★ "变大一圈"：同色外扩 2px 光晕；未选中的段压暗
+                                        ...(legendPick
+                                          ? legendPick === p.k
+                                            ? { boxShadow: `0 0 0 2px ${CREDIT_COLORS[p.k]}`, position: "relative", zIndex: 2 }
+                                            : { opacity: 0.22 }
+                                          : {}),
+                                      },
                                     }),
                                   )
-                                : null,
+                                // 该日没有 Credits 分项（早于 Credits 建模的旧数据 / 缺单价
+                                // 的那天）：退回单根 tokens 柱。原先是 `: null` —— 那几天
+                                // 柱高算出来了却是**空柱**（什么都看不到）。
+                                : h("div", {
+                                    style: {
+                                      height: "100%",
+                                      background: "var(--dsw-alias-state-business-primary, #0969da)",
+                                      opacity: legendPick ? 0.22 : 0.85,
+                                    },
+                                  }),
                             );
                           }),
                         ),

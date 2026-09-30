@@ -390,6 +390,34 @@ for (const scene of SCENARIOS) {
     ok(/minHeight: "3px"/.test(src), "柱子有最小高度（0 值也可见）");
     // ③ widthHandle：根节点必须带 data-conversation-composer-overlay
     const rootSeg = src.slice(src.indexOf("function MimoUsageView("), src.indexOf("function MimoSettingsForm("));
+    // ④ Credits 图例与柱段**颜色同源** + 点选高亮（09-30 用户反馈）
+    // 用户原话：「■ 缓存命中输入 / ■ 未命中输入 / ■ 输出 根本没对应上柱状图上的颜色」。
+    // 根因：图例只是文字里的 "■"（继承整行的 label-tertiary = 三块全灰），
+    // 柱段却各是绿/黄/蓝 —— 两边各写一份，必然漂移。
+    // 修法 = 一份 CREDIT_COLORS，图例色块与柱段都从它取；行为级验证见
+    // pwtest/dsh-mimo-extension/verify-credits-legend.mjs（会真的去点图例）。
+    const colorDefs = (src.match(/CREDIT_COLORS = \{/g) || []).length;
+    ok(colorDefs === 1, `★ 三段颜色只有一份定义（CREDIT_COLORS 出现 ${colorDefs} 次，两处以上就会漂移）`);
+    const colorReads = (src.match(/background: CREDIT_COLORS/g) || []).length;
+    ok(colorReads === 2, `★ 图例色块与柱段都读同一份颜色（background: CREDIT_COLORS ${colorReads} 处：图例 1 + 柱段 1）`);
+    ok(/CREDIT_COLORS\[k\]/.test(src) && /CREDIT_COLORS\[p\.k\]/.test(src),
+      "★ 图例用 [k]、柱段用 [p.k]，都指向 CREDIT_COLORS");
+    ok(!/h\("span", null, "■/.test(src),
+      "★ 图例不再用文字里的 ■（那是三块全灰、与柱段对不上的根源）");
+    // 点选高亮：可点的图例项 + 同色外扩光晕 + 其余压暗 + 容器放开裁剪
+    ok(/const \[legendPick, setLegendPick\] = useState\(null\)/.test(src),
+      "有 legendPick 点选状态（声明在组件 useState 区，不在某个内层函数里）");
+    ok(/onClick: \(\) => setLegendPick\(\(prev\) => \(prev === k \? null : k\)\)/.test(src),
+      "★ 图例可点击，再点同项取消（toggle）");
+    ok(/"aria-pressed": legendPick === k/.test(src) && /role: "button"/.test(src),
+      "图例项是 role=button + aria-pressed（可访问性/可测试性）");
+    ok(/boxShadow: `0 0 0 2px \$\{CREDIT_COLORS\[p\.k\]\}`/.test(src),
+      "★ 命中段「变大一圈」= 同色 2px 外扩光晕");
+    ok(/\{ opacity: 0\.22 \}/.test(src), "未选中的段压暗到 0.22");
+    ok(/overflow: legendPick \? "visible" : "hidden"/.test(src),
+      "★ 点选时柱容器放开 overflow（否则光晕被圆角裁剪切掉，等于没效果）");
+    ok(/title: t\("view\.legendHint"\)/.test(src), "图例有 hover 提示（教用户可以点）");
+    // (view.legendHint 中英成对由下面的 `t() 用到的 key 都有中/英文案` 兜底，不重复断言)
     // 🔴 09-28 修正：不要用 `data-conversation-composer-overlay` 隐藏手柄 ——
     // 它的语义是"本视图自带滚动容器"，会把 viewArea 锁成固定高度，
     // 我们没有内部滚动容器 → 详情页**滚不动**。
