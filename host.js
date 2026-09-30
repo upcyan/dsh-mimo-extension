@@ -467,7 +467,25 @@ const MIMO_CREDIT_DEFAULT = { cache: 2, miss: 100, out: 200 };
  * 所以未命中输入 = input + cacheWrite；非小米模型返回 0（不烧 MiMo 额度）。
  * 夜间 0.8x 系数未建模（时段相关，摘要里注明）。
  */
-export function estimateCredits(provider, model, usage) {
+/**
+ * 非高峰时段折扣系数（官方「用量与额度」口径）：
+ * **北京时间 00:00–08:00** 消耗系数 0.8 —— 即该时段的 Credits 按 8 折计。
+ *
+ * ⚠ 判定必须**按事件发生时刻**，不能按天：一个自然日跨了高峰/非高峰两段，
+ *    按天会把整个白天都打折（高估节省）或整夜都不打折（低估）。
+ * ⚠ 依赖运行环境的本地时区。本机是 Asia/Shanghai，与官方口径一致；
+ *    若部署在别的时区，这里会偏 —— 所以用**固定的 UTC+8 偏移**换算，
+ *    不依赖 `getHours()`（那读的是系统时区），保证在哪都对。
+ */
+const OFFPEAK_RATIO = 0.8;
+export function isOffPeakHour(timeMs) {
+  const t = Number.isFinite(timeMs) ? timeMs : Date.now();
+  // 北京时间为 UTC+8，且中国不用夏令时 → 固定偏移即可
+  const beijingHour = new Date(t + 8 * 3600_000).getUTCHours();
+  return beijingHour >= 0 && beijingHour < 8;
+}
+
+export function estimateCredits(provider, model, usage, timeMs) {
   if (!isMiMoBaseURL(builtinBaseURL(provider)) && !/mimo/i.test(`${provider}/${model}`)) {
     return { total: 0, cache: 0, miss: 0, out: 0 };
   }
@@ -476,10 +494,12 @@ export function estimateCredits(provider, model, usage) {
   const cacheRead = Number(usage?.cacheReadTokens) || 0;
   const cacheWrite = Number(usage?.cacheWriteTokens) || 0;
   const output = Number(usage?.outputTokens) || 0;
-  const cCache = (cacheRead / 1e6) * rates.cache;
-  const cMiss = ((input + cacheWrite) / 1e6) * rates.miss;
-  const cOut = (output / 1e6) * rates.out;
-  return { total: cCache + cMiss + cOut, cache: cCache, miss: cMiss, out: cOut };
+  // 非高峰时段整单 8 折（三分量同乘，保持"分量之和 = 总量"）
+  const ratio = isOffPeakHour(timeMs) ? OFFPEAK_RATIO : 1;
+  const cCache = (cacheRead / 1e6) * rates.cache * ratio;
+  const cMiss = ((input + cacheWrite) / 1e6) * rates.miss * ratio;
+  const cOut = (output / 1e6) * rates.out * ratio;
+  return { total: cCache + cMiss + cOut, cache: cCache, miss: cMiss, out: cOut, offPeak: ratio < 1 };
 }
 
 const PLAN_ITEM_LABELS = {
@@ -815,7 +835,7 @@ export function createLocalUsageCounter(ctx) {
     entry.calls += 1;
     rec.models.set(key, entry);
 
-    noteDay(ev.time, total, estimateCredits(provider, model, usage));
+    noteDay(ev.time, total, estimateCredits(provider, model, usage, ev.time));
     noteModel(key, total);
   };
 

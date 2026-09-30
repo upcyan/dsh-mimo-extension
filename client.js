@@ -380,6 +380,8 @@
       "view.modeCompareNoData": "开启/关闭「MiMo 模式」后会在这里对比切换前后的日均 Credits 消耗。",
       "view.todayCredits": "今日 (Credits·估)",
       "view.monthCredits": "本月 (Credits·估)",
+    
+      "view.legendOffPeak": "（北京时间 00:00–08:00 按 8 折计）",
     };
     const en = {
       "pill.label": "MiMo quota",
@@ -547,6 +549,8 @@
       "view.modeCompareNoData": "After you toggle \"MiMo mode\", the before/after daily Credit comparison will appear here.",
       "view.todayCredits": "Today (Credits·est)",
       "view.monthCredits": "This month (Credits·est)",
+    
+      "view.legendOffPeak": "(Beijing 00:00–08:00 counted at 0.8×)",
     };
 
     // 由 apply 注入的本地化函数；未注册时退化为按浏览器语言直查
@@ -2594,6 +2598,12 @@
                               h("span", null, "■ ", t("view.legendCache")),
                               h("span", null, "■ ", t("view.legendMiss")),
                               h("span", null, "■ ", t("view.legendOut")),
+                              // 说明夜间折扣已建模 —— 否则用户自己按倍率算会对不上
+                              h(
+                                "span",
+                                { style: { opacity: 0.75 } },
+                                t("view.legendOffPeak"),
+                              ),
                             )
                           : null,
                         h(

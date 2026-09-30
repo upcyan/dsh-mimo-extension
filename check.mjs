@@ -815,6 +815,28 @@ if (loaded) {
     ok(!/unset.*LEGACY_SETTINGS_NS|delete.*legacy/i.test(src), "不删除旧段（留作回滚依据）");
   }
 
+  // ---------- 夜间 0.8x 系数（09-30 用户需求）----------
+  // 官方口径：北京时间 00:00–08:00 消耗系数 0.8。
+  // ⚠ 必须**按事件时刻**判定，不能按天（一个自然日跨两段，按天会整日打折）。
+  {
+    const src = readFileSync(join(here, "host.js"), "utf8");
+    ok(/const OFFPEAK_RATIO = 0\.8;/.test(src), "有非高峰系数常量");
+    ok(/export function isOffPeakHour\(timeMs\)/.test(src), "有按时刻的时段判定");
+    ok(/beijingHour >= 0 && beijingHour < 8/.test(src), "★ 判定区间为北京 00:00–08:00");
+    // 🔴 时区必须用固定 UTC+8，不能用 getHours()（依赖系统时区）
+    ok(/new Date\(t \+ 8 \* 3600_000\)\.getUTCHours\(\)/.test(src),
+      "★ 用固定 UTC+8 偏移换算（不依赖运行环境时区）");
+    ok(!/isOffPeakHour[\s\S]{0,200}getHours\(\)/.test(src), "未误用本地 getHours()");
+    // 系数必须乘到三个分量上（漏乘会让"分量之和 ≠ 总量"）
+    ok(/const ratio = isOffPeakHour\(timeMs\) \? OFFPEAK_RATIO : 1;/.test(src), "算出倍率");
+    const ratioUses = (src.match(/\* ratio;/g) || []).length;
+    ok(ratioUses === 3, `★ 三个分量都乘了倍率（实为 ${ratioUses} 处）`);
+    // 事件时刻传入
+    ok(/estimateCredits\(provider, model, usage, ev\.time\)/.test(src),
+      "★ 调用时传入事件时间（不是当前时间）");
+    ok(/offPeak: ratio < 1/.test(src), "返回值带 offPeak 标记");
+  }
+
   // ---------- 启动同步顺序（09-28：预设"出现后又消失"）----------
   // 同步读的是 currentMimo()（用户层），而 userSettings 在 register 才赋值。
   // 同步调用若在 register 之前，currentMimo 回退 patch 配置（无这些开关）
