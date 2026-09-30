@@ -63,8 +63,8 @@
     const target =
       typeof window !== "undefined" && typeof window.fetch === "function"
         ? window.fetch.bind(window)
-        : typeof fetch === "function"
-          ? fetch
+        : typeof globalThis.fetch === "function"
+          ? globalThis.fetch
           : null;
     if (target === null) return Promise.resolve();
     try {
@@ -76,7 +76,7 @@
   function pingDelay(fn, ms) {
     try {
       if (typeof window !== "undefined" && typeof window.setTimeout === "function") return window.setTimeout(fn, ms);
-      if (typeof setTimeout === "function") return setTimeout(fn, ms);
+      if (typeof globalThis.setTimeout === "function") return globalThis.setTimeout(fn, ms);
     } catch {
       /* 忽略 */
     }
@@ -199,6 +199,10 @@
   }
   function makeFactory(require) {
     probe("factory");
+    // 0.2.0 timer 客户端服务（inject 声明见 exports.inject）：动态客户端里
+    // 裸 setInterval/clearInterval 被 closureTraps 拦截（TIMER_REDIRECT），
+    // 组件里创建定时器一律走它。apply 时从 ctx 取，组件闭包读这里。
+    let timerCtx = null;
     const react = require("react");
     const { createElement: h, useCallback, useEffect, useMemo, useRef, useState } = react;
     // react-dom 在平台 seed 表里（`staticModules` 含 "react-dom"），
@@ -926,13 +930,23 @@
 
       useEffect(() => {
         refresh();
-        const timer = setInterval(refresh, 60_000);
+        // 0.2.0：裸 setInterval/clearInterval 会被 closureTraps 当场抛错
+        // （TIMER_REDIRECT）→ 整个胶囊消失。官方做法：inject 声明 timer，
+        // ctx.interval(cb, ms) 直接返回 disposer，cleanup 里调用。
+        // globalThis 兜底只服务离线测试环境（真浏览器的属性访问不被 trap）。
+        const stopPolling =
+          typeof timerCtx?.interval === "function"
+            ? timerCtx.interval(refresh, 60_000)
+            : (() => {
+                const t = globalThis.setInterval(refresh, 60_000);
+                return () => globalThis.clearInterval(t);
+              })();
         const onVisible = () => {
           if (!document.hidden) refresh();
         };
         document.addEventListener("visibilitychange", onVisible);
         return () => {
-          clearInterval(timer);
+          stopPolling();
           document.removeEventListener("visibilitychange", onVisible);
         };
       }, [refresh]);
@@ -3701,6 +3715,7 @@
     }
 
     function apply(ctx) {
+      timerCtx = ctx;
       // 兼容旧包名/别名行残留，避免重复注册
       const entryName = ctx.fiber?.entry?.options?.name;
       // 兼容旧包名/别名行残留，避免重复注册：只有 entry 名明确**不是**本插件时才跳过。
@@ -3975,7 +3990,8 @@
     const exports = {};
     // locale 必须与 slots 一起声明：apply 内会读取 ctx.locale，
     // 未声明的服务属性读取会被 Cordis 的上下文 Proxy 直接抛错。
-    exports.inject = ["slots", "locale"];
+    // timer：0.2.0 客户端定时器服务（未声明的 TIMER_VERBS 读取会被 ctx 代理拒绝）
+    exports.inject = ["slots", "locale", "timer"];
     exports.apply = apply;
     return exports;
   }

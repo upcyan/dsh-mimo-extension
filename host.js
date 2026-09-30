@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 // @ts-check
 /**
  * dsh-mimo-extension — DeepSeek Harness 宿主插件
@@ -23,8 +23,165 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
  */
 
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, delimiter as pathDelimiter } from "node:path";
 import { createRequire } from "node:module";
+const MIMO_PRESET_DIR_NAME = "dsh-mimo-mode";
+const MIMO_PRESET_ANCHOR = "- id: preset-dsh-mimo-mode";
+const MIMO_PATCH_ENTRY_NAME = "preset-dsh-mimo-mode";
+
+/** 活动 profile 的 patch 文件（PowerHarness 部署单 profile=web；可用 DSH_PROFILE 覆盖）。 */
+function presetPatchPath(home) {
+  const profile = process.env.DSH_PROFILE?.trim() || "web";
+  return `${home.replace(/\/+$/, "")}/profiles/${profile}/cordis.patch.yml`;
+}
+
+/** core 进程真实 runtime 的 dsh 主版本。
+ *  NODE_PATH 指向在用 runtime（supervisor 注入）；回退层的 dsh 是 last-good
+ *  旧版 symlink，读它会误判 —— 故走 NODE_PATH 的 require 锚点。 */
+export function coreSupportsPresetDeclaration() {
+  try {
+    // 版本来源用 supervisor 维护的 state.json（与运行中 core 严格一致；
+    // core 进程内 NODE_PATH 可能为空，靠它解析 runtime 会静默失败）。
+    const home = dshHomeDir();
+    const state = JSON.parse(fs.readFileSync(path.join(path.dirname(home), "state.json"), "utf8"));
+    const version = String(state.activeVersion || "");
+    // 0.1.x → 目录机制；0.2.0+（含 0.2.0-rc.x，注意 parseInt 首段是 0）→ patch 声明机制。
+    const [maj, min] = version.split(".").map((n) => Number.parseInt(n, 10) || 0);
+    return maj >= 2 || (maj === 0 && min >= 2);
+  } catch { return false; }
+}
+
+/** 把插件包内 preset 模板转成 0.2 的 `- insert:` 声明块（文本，可直接追加进 patch）。
+ *  - `!!js <expr>` 按当前平台求值成布尔（NAS 恒 linux），写入标准 YAML；
+ *  - meta 字段用 JSON 引号包裹（description 含中文标点，plain 有折叠风险）。 */
+export async function buildPresetInsertBlock(presetYamlText, servicesYamlText) {
+async function loadYaml() {
+  // ① 生产：host 在 profile/node_modules 内，上链回退层即可解析 'yaml'
+  try { return await import("yaml"); } catch { /* 仓库直跑时无上链，走锚点 */ }
+  // ② DSH_HOME 回退层（profiles/node_modules/yaml）
+  try {
+    const home = (process.env.DSH_HOME || "").replace(/\/+$/, "");
+    if (home) return await import(`${home}/profiles/node_modules/yaml/browser/index.js`);
+  } catch { /* 继续 */ }
+  // ③ NODE_PATH（supervisor 注入的 runtime）
+  try {
+    const anchor = (process.env.NODE_PATH || "").split(pathDelimiter).filter(Boolean)[0];
+    if (anchor) return await import(`${anchor}/yaml/browser/index.js`);
+  } catch { /* 继续 */ }
+  throw new Error("yaml 解析器不可用（yaml package not resolvable）");
+}
+
+const { stringify, parse } = await loadYaml();
+  const metaName = (presetYamlText.match(/^name:[ \t]*(.+)$/m) || [])[1]?.trim() || "MiMo 模式";
+  const metaDesc = (presetYamlText.match(/^description:[ \t]*(.+)$/m) || [])[1]?.trim() || "";
+  const metaOrder = Number((presetYamlText.match(/^order:[ \t]*(\d+)/m) || [])[1] || 9);
+  const prepared = servicesYamlText.replace(
+    /^([ \t]*[A-Za-z][\w-]*[ \t]*:[ \t]*)!!js[ \t]+(.+?)[ \t]*$/gm,
+    (_m, key, expr) => `${key}${JSON.stringify(`__JS__${expr}`)}`);
+  const deepEval = (node) => {
+    if (Array.isArray(node)) return node.map(deepEval);
+    if (node && typeof node === "object") {
+      for (const k of Object.keys(node)) node[k] = deepEval(node[k]);
+      return node;
+    }
+    if (typeof node === "string" && node.startsWith("__JS__")) {
+      const expr = node.slice(6);
+      try { return Function("process", `"use strict"; return (${expr})`)(process); } catch { return undefined; }
+    }
+    return node;
+  };
+  const services = deepEval(parse(prepared));
+  const svcYaml = stringify(services, { lineWidth: 0, indent: 2 }).replace(/\n$/, "");
+  const svcIndented = svcYaml.split("\n").map((l) => (l ? `      ${l}` : l)).join("\n");
+  return [
+    `# ${MIMO_MODE_LABEL(manifestDisplayName())}预设声明（0.2 机制：@deepseek-ai/dsh-agent-preset；由 mimo-extension 开关自动增删）`,
+    "- insert:",
+    `    - id: ${MIMO_PATCH_ENTRY_NAME}`,
+    "      name: '@deepseek-ai/dsh-agent-preset'",
+    "      config:",
+    `        id: ${MIMO_PRESET_DIR_NAME}`,
+    `        name: ${JSON.stringify(metaName)}`,
+    `        description: ${JSON.stringify(metaDesc)}`,
+    `        order: ${metaOrder}`,
+    "        plugins:",
+    svcIndented,
+  ].join("\n") + "\n";
+}
+
+/** 在 patch 文本中定位本插件的 insert 段：[段首(- insert: 或紧邻块注释), 段尾(下一个顶格行))。 */
+function locatePresetBlock(lines) {
+  const idIdx = lines.findIndex((l) => l.trim() === MIMO_PRESET_ANCHOR);
+  if (idIdx === -1) return null;
+  let start = idIdx;
+  while (start > 0 && lines[start] !== "- insert:") start--;
+  if (lines[start] !== "- insert:") return null;
+  // 块注释紧邻上方（`# ... mimo-extension ...`）一并纳入
+  if (start > 0 && /^# .*mimo-extension/.test(lines[start - 1])) start -= 1;
+  let end = idIdx + 1;
+  while (end < lines.length && (lines[end] === "" || /^[ \t]/.test(lines[end]))) end++;
+  return { start, end };
+}
+
+/** upsert 声明块（幂等：已有则整段替换，没有则追加到文件尾）。 */
+export function upsertPresetBlock(patchText, block) {
+  const lines = patchText.replace(/\n+$/, "").split("\n");
+  const blockLines = block.replace(/\n+$/, "").split("\n");
+  const seg = locatePresetBlock(lines);
+  if (seg) {
+    const next = [...lines.slice(0, seg.start), ...blockLines, ...lines.slice(seg.end)];
+    return next.join("\n") + "\n";
+  }
+  return [...lines, "", ...blockLines].join("\n") + "\n";
+}
+
+/** 移除声明块（含其块注释）。 */
+export function removePresetBlock(patchText) {
+  const lines = patchText.replace(/\n+$/, "").split("\n");
+  const seg = locatePresetBlock(lines);
+  if (!seg) return patchText;
+  return [...lines.slice(0, seg.start), ...lines.slice(seg.end)].join("\n").replace(/\n+$/, "") + "\n";
+}
+
+
+/** 0.2 的预设声明同步（独立于 settings 回调链 —— 0.2 上 ctx.inject(["settings"])
+ *  可能因服务未装配而不触发，把 syncMimoMode 整条链拖住；本函数只依赖 patch 文件。 */
+export async function syncPresetDeclaration(ctx, wantOverride) {
+  const home = (process.env.DSH_HOME || "").replace(/\/+$/, "");
+  if (!home) return false;
+  if (!coreSupportsPresetDeclaration()) return false;
+  const patchPath = presetPatchPath(home);
+  if (!existsSync(patchPath)) {
+    ctx?.logger?.warn?.(`[dsh-mimo-extension] 未找到 patch 文件：${patchPath}`);
+    return false;
+  }
+  const current = readFileSync(patchPath, "utf8");
+  let want = wantOverride;
+  if (want === undefined) {
+    const seg = current.match(/- id: mimo-extension\n[\s\S]*?(?=\n- [a-zA-Z#]|$)/);
+    want = seg ? /^[ \t]+mimoMode:[ \t]*true[ \t]*$/m.test(seg[0]) : false;
+  }
+  let next;
+  if (want) {
+    const tplDir = new URL("./presets/mimo/", import.meta.url);
+    const block = await buildPresetInsertBlock(
+      readFileSync(new URL("preset.yml", tplDir), "utf8"),
+      readFileSync(new URL("agent.cordis.yml", tplDir), "utf8"));
+    next = upsertPresetBlock(current, block);
+  } else {
+    next = removePresetBlock(current);
+  }
+  if (!next || next === current) return false;
+  writeFileSync(patchPath, next, "utf8");
+  ctx?.logger?.warn?.(
+    want
+      ? "[dsh-mimo-extension] 「MiMo 模式」预设声明已写入 cordis.patch.yml（0.2 insert 机制）；新 entry 不热加载，需重启 core 生效"
+      : "[dsh-mimo-extension] 「MiMo 模式」预设声明已从 cordis.patch.yml 移除；需重启 core 生效");
+  return true;
+}
+
+function manifestDisplayName() { return "MiMo 模式"; }
+function MIMO_MODE_LABEL(name) { return `「${name}」`; }
+
 
 export const name = "mimo-extension";
 
@@ -140,11 +297,13 @@ function mimoSettingsSchema(input) {
  * 解析真 schemastery 工厂。
  *
  * 插件自身目录里没有 node_modules，所以锚点都指向「能解析到 dsh 依赖树」的位置：
- *   1. `ctx.baseUrl` → profile 目录（部署时 `profiles/node_modules` 是与 core
- *      同步的软链树，能解析到）。注意 Cordis 上下文是 Proxy，读未声明的属性会
- *      **直接抛错**，所以整段必须包 try —— 可选链 `?.` 也挡不住。
- *   2. `import.meta.url` —— 插件若被装进带依赖树的目录
- *   3. `process.argv[1]` —— dsh 启动入口 bin.js，必然能解析 core 自己的依赖
+ *   1. `process.argv[1]` —— dsh 启动入口 bin.js，即**正在运行的安装**，必然能
+ *      解析 core 自己的依赖。0.2.0 起必须放第一位：profile 的软链树已退役，
+ *      `ctx.baseUrl` 会解析到 last-good（**上一代**运行时快照）——版本错位，
+ *      且快照会在下次升级时轮换，绝不能当真相来源。
+ *   2. `ctx.baseUrl` → profile 目录。注意 Cordis 上下文是 Proxy，读未声明的属性
+ *      会**直接抛错**，所以整段必须包 try —— 可选链 `?.` 也挡不住。
+ *   3. `import.meta.url` —— 插件若被装进带依赖树的目录
  *   4. 进程 cwd
  *
  * @param {any} ctx 插件上下文（可为普通对象，测试时直接给 baseUrl）
@@ -152,6 +311,8 @@ function mimoSettingsSchema(input) {
  */
 function loadSchemaFactory(ctx) {
   const anchors = [];
+  // 运行中的安装优先（理由见上方文档注释）；profile 锚点在 0.2.0+ 只作兜底
+  if (typeof process.argv?.[1] === "string" && process.argv[1]) anchors.push(process.argv[1]);
   try {
     if (typeof ctx?.baseUrl === "string" && ctx.baseUrl.length > 0) {
       anchors.push(new URL("./__anchor__.js", ctx.baseUrl).href);
@@ -160,7 +321,6 @@ function loadSchemaFactory(ctx) {
     /* Proxy 上读 baseUrl 可能抛 —— 吞掉，换下一个锚点 */
   }
   anchors.push(import.meta.url);
-  if (typeof process.argv?.[1] === "string" && process.argv[1]) anchors.push(process.argv[1]);
   try {
     anchors.push(new URL("./__anchor__.js", `file://${process.cwd()}/`).href);
   } catch {
@@ -2144,7 +2304,8 @@ export function apply(ctx, config) {
   //
   // ⚠ 幂等：每次启动 / 开关变化都执行 —— 模板随插件升级更新时，
   //   已安装的预设也要跟着更新（以插件包内模板为准整目录重写）。
-  const MIMO_PRESET_DIR_NAME = "dsh-mimo-mode";
+
+
 
   // ── 每日 Credits 聚合的持久化 ──────────────────────────────────────
   // 本地 days 来自存活会话的重算：会话删除/重启会丢历史。趋势对比需要
@@ -2289,7 +2450,10 @@ export function apply(ctx, config) {
       //    删掉已安装的预设**（用户实测：预设"出现后又消失"）。
       //    闭包 scope 直接读已注册的解析值，不依赖赋值顺序。
       deps.syncMimoMode = async () => {
-        const want = scope.get()?.mimo?.mimoMode === true;
+        // scope 在 0.2 可能未装配（settings.register 已移除）——可选链兜底，
+        // 读不到用户层时回退 patch config 的合成值（currentMimo 同源）。
+        const want = scope?.get?.()?.mimo?.mimoMode === true
+          || cfg?.mimo?.mimoMode === true;
         const home = dshHomeDir();
         if (!home) {
           ctx.logger?.warn?.("[dsh-mimo-extension] 找不到 DSH home，无法安装「MiMo 模式」预设");
@@ -2315,6 +2479,37 @@ export function apply(ctx, config) {
           ctx.logger?.info?.(`[dsh-mimo-extension] 「MiMo 模式」预设已安装：${dir}`);
         } catch (error) {
           ctx.logger?.warn?.(`[dsh-mimo-extension] MiMo 模式预设同步失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+        // ── 0.2：目录机制已移除（官方 README: no directory），patch 声明才是加载入口 ──
+        // 0.1.5 目录照写（回滚可用、无害）；0.2 额外 upsert `- insert: preset-dsh-mimo-mode`。
+        // ⚠ patch 新 entry 不热加载 —— 写入后需重启 core（日志会明确提示）。
+        try {
+          if (!coreSupportsPresetDeclaration()) return;
+          const patchPath = presetPatchPath(home);
+          if (!existsSync(patchPath)) {
+            ctx.logger?.warn?.(`[dsh-mimo-extension] 未找到 patch 文件：${patchPath}`);
+            return;
+          }
+          const current = readFileSync(patchPath, "utf8");
+          let next;
+          if (want) {
+            const tplDir = new URL("./presets/mimo/", import.meta.url);
+            const block = await buildPresetInsertBlock(
+              readFileSync(new URL("preset.yml", tplDir), "utf8"),
+              readFileSync(new URL("agent.cordis.yml", tplDir), "utf8"));
+            next = upsertPresetBlock(current, block);
+          } else {
+            next = removePresetBlock(current);
+          }
+          if (next && next !== current) {
+            writeFileSync(patchPath, next, "utf8");
+            ctx.logger?.warn?.(
+              want
+                ? "[dsh-mimo-extension] 「MiMo 模式」预设声明已写入 cordis.patch.yml（0.2 insert 机制）；新 entry 不热加载，需重启 core 生效"
+                : "[dsh-mimo-extension] 「MiMo 模式」预设声明已从 cordis.patch.yml 移除；需重启 core 生效");
+          }
+        } catch (error) {
+          ctx.logger?.warn?.(`[dsh-mimo-extension] 0.2 预设声明同步失败：${error instanceof Error ? error.message : String(error)}`);
         }
       };
 
@@ -2499,11 +2694,20 @@ export function apply(ctx, config) {
                   if (typeof body.visionRoutingTextModels === "boolean") patch.visionRoutingTextModels = body.visionRoutingTextModels;
                   if (typeof body.visionRoutingAllMimo === "boolean") patch.visionRoutingAllMimo = body.visionRoutingAllMimo;
                   if (typeof body.mimoMode === "boolean") patch.mimoMode = body.mimoMode;
-                  await userSettings.update({ mimo: patch });
+                  if (userSettings && typeof userSettings.update === "function") {
+                    await userSettings.update({ mimo: patch });
+                  } else if (typeof settingsCtx.settings?.update === "function") {
+                    // 0.2：scope 不可用，直接按 ns 写用户层（SettingsForms.update）
+                    await settingsCtx.settings.update(SETTINGS_NS, { mimo: patch });
+                  } else {
+                    throw new Error("settings 写入通道不可用（0.1.5/0.2 均未命中）");
+                  }
                   deps.clearOfficialCache?.();   // 设置已保存：官方数据作废
                   // 「MiMo 模式」开关变化 → 立即安装/移除预设
                   if (patch.mimoMode !== undefined) {
                     deps.syncMimoMode?.().catch(() => {
+                    // 0.2：开关变化同步 patch 声明（显式传 want，不依赖启动自读）
+                    syncPresetDeclaration(ctx, patch.mimoMode === true).catch(() => {});
                       /* 已内部记警告 */
                     });
                   }
@@ -2649,6 +2853,17 @@ export function apply(ctx, config) {
       },
     });
   });
+
+  // ── 0.2 预设声明：独立挂载（不等 settings 回调链，服务未装配也不受影响） ──
+  try {
+    const probe = (tag, info) => { try { appendFileSync('/tmp/mimo-probe.log', `${new Date().toISOString()} [${tag}] ${info}\n`); } catch {} };
+    probe('start', `NODE_PATH=${process.env.NODE_PATH ?? '(空)'} DSH_HOME=${process.env.DSH_HOME ?? '(空)'}`);
+    probe('ver', `coreSupportsPresetDeclaration=${coreSupportsPresetDeclaration()}`);
+    syncPresetDeclaration(ctx).then((changed) => probe('done', `changed=${changed}`)).catch((error) => probe('catch', error?.message ?? String(error)));
+  } catch (error) {
+    try { appendFileSync('/tmp/mimo-probe.log', `apply外层异常: ${error?.message}\n`); } catch {}
+    /* 不影响插件激活 */
+  }
 }
 
 /**
@@ -2752,3 +2967,15 @@ function formatSummaryText(s, query = "both") {
 }
 
 export default apply;
+
+// ── 0.2 静态 Config 导出 ─────────────────────────────────────────────
+// 0.2 的设置系统从 `entry.fiber.runtime.Config` 读取 schema（schemastery，
+// 必须带 toJSON）；没有它 describe 会静默跳过本 ns、自动生成的设置页不会
+// 出现、旧配置迁移也会被拒。锚点走插件自身位置（上链 profile/node_modules，
+// 部署环境必有 @deepseek-ai/schemastery）。
+let __staticConfig;
+try {
+  const __S = loadSchemaFactory({ baseUrl: new URL("../../", import.meta.url).href });
+  if (__S) __staticConfig = buildMimoSettingsSchema(__S);
+} catch { /* schemastery 不可用时退化为无设置页 */ }
+export const Config = __staticConfig;

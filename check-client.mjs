@@ -417,7 +417,30 @@ for (const scene of SCENARIOS) {
     ok(/overflow: legendPick \? "visible" : "hidden"/.test(src),
       "★ 点选时柱容器放开 overflow（否则光晕被圆角裁剪切掉，等于没效果）");
     ok(/title: t\("view\.legendHint"\)/.test(src), "图例有 hover 提示（教用户可以点）");
-    // (view.legendHint 中英成对由下面的 `t() 用到的 key 都有中/英文案` 兜底，不重复断言)
+
+    // ---------- 0.2.0 closureTraps：动态客户端里裸定时器/fetch 一调用就抛 ----------
+    // 0.2.0 的 DYNAMIC_CLIENT_REDIRECTS = setTimeout/setInterval/clearTimeout/
+    // clearInterval/fetch/require（0.1.5 只有 fetch/setTimeout）—— 闭包参数遮蔽
+    // 这些裸标识符，一调用就抛 TIMER_REDIRECT 指路文本。09-30 升 0.2.0 后胶囊
+    // 的轮询 `setInterval(refresh, 60_000)` 当场抛错 → 整个胶囊消失（用户报
+    // 「用量胶囊需要重新适配 0.2.0」）。
+    // 官方做法（TIMER_REDIRECT 原文）：插件声明 inject:["timer"]，用
+    // ctx.interval(cb, ms)（返回 disposer），React 里 useEffect 创建、cleanup 调用。
+    {
+      const code = src
+        .replace(/\/\*[\s\S]*?\*\//g, " ")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")
+        .replace(/`(?:\\.|[^`\\])*`/g, '""')
+        .replace(/'(?:\\.|[^'\\])*'/g, '""')
+        .replace(/"(?:\\.|[^"\\])*"/g, '""');
+      const bare = [...code.matchAll(/(?<![.\w$])(setInterval|clearInterval|setTimeout|clearTimeout|fetch)\s*\(/g)].map((m) => m[1]);
+      ok(bare.length === 0,
+        `★ 无裸定时器/fetch 调用（0.2.0 closureTraps 当场抛错、整槽消失）${bare.length ? `：${[...new Set(bare)].join(",")}` : ""}`);
+      ok(/inject = \["slots", "locale", "timer"\]/.test(src),
+          "已声明 inject timer（0.2.0 定时器服务的官方入口）");
+      ok(/timerCtx\.interval\(/.test(src),
+          "胶囊轮询走 ctx.interval（官方 timer 服务，返回 disposer）");
+    }    // (view.legendHint 中英成对由下面的 `t() 用到的 key 都有中/英文案` 兜底，不重复断言)
     // 🔴 09-28 修正：不要用 `data-conversation-composer-overlay` 隐藏手柄 ——
     // 它的语义是"本视图自带滚动容器"，会把 viewArea 锁成固定高度，
     // 我们没有内部滚动容器 → 详情页**滚不动**。

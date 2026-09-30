@@ -7,7 +7,8 @@
  * 用法： node check.mjs
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
@@ -501,12 +502,48 @@ if (loaded) {
 
       // 3) 走**真实的** dsh-settings.describe() —— 这正是当年抛错的代码路径。
       //    直接用它导出的 SettingsProvider.prototype，跳过整个 Cordis 装配。
-      let SettingsProvider;
+      let SettingsProvider;   // 0.1.x 形状：SettingsProvider.prototype.describe()
+      let redactSecrets;      // 0.2.0 形状：设置编辑器投影，导出 redactSecrets
       try {
-        ({ SettingsProvider } = coreRequire("@deepseek-ai/dsh-settings"));
-        ok(typeof SettingsProvider === "function", "加载到真实 @deepseek-ai/dsh-settings");
+        // 0.2.0 起 profile 不再带指向 runtime 的软链树：profile 锚点会解析到
+        // last-good（上一代运行时快照，exports 形状已变）或直接失败。官方解析
+        // 锚点是「dsh 安装目录 或 profile 目录」（loader skip 报错原文），
+        // 所以按 [运行中的 dsh 安装 → profile] 顺序找，运行版本优先。
+        const reqs = [];
+        try {
+          const bin = execFileSync("which", ["dsh"], { encoding: "utf8" }).trim();
+          if (bin) reqs.push(createRequire(realpathSync(bin)));
+        } catch {
+          /* PATH 上没有 dsh（CI）→ 只用 profile 锚点 */
+        }
+        reqs.push(coreRequire);
+        for (const req of reqs) {
+          try {
+            const mod = req("@deepseek-ai/dsh-settings");
+            if (typeof mod?.redactSecrets === "function") { redactSecrets = mod.redactSecrets; break; }
+            if (typeof mod?.SettingsProvider === "function") { SettingsProvider = mod.SettingsProvider; break; }
+          } catch {
+            /* 试下一个锚点 */
+          }
+        }
+        ok(typeof redactSecrets === "function" || typeof SettingsProvider === "function",
+          "加载到真实 @deepseek-ai/dsh-settings（运行中的 dsh 安装优先于 last-good 快照）");
       } catch (error) {
         fail.push(`无法加载 @deepseek-ai/dsh-settings：${error.message}`);
+      }
+      if (typeof redactSecrets === "function") {
+        // 0.2.0 官方路径：role('secret') 字段过线前必须被摘除
+        // （redact.d.ts：把 schema 声明的 secret 从值里剥离并留 sidecar 记录）。
+        try {
+          const value = schema({ mimo: { planTotalTokens: "abc", pillPosition: "nope", cookie: "SECRET-COOKIE" } });
+          const red = redactSecrets(schema, value);
+          ok(!JSON.stringify(red.value).includes("SECRET-COOKIE"),
+            "★ 真实 redactSecrets 摘除 cookie 明文（0.2.0 契约）");
+          ok(Array.isArray(red.secrets) && red.secrets.some((s) => (s.path ?? []).join(".") === "mimo.cookie"),
+            "★ sidecar 记录 mimo.cookie 位置（表单可渲染 write-only 输入）");
+        } catch (error) {
+          fail.push(`redactSecrets 契约失败：${error.message}`);
+        }
       }
       if (SettingsProvider) {
         const makeStub = (ns, sch) => {
@@ -1104,3 +1141,35 @@ if (fail.length > 0) {
   process.exit(1);
 }
 console.log(`\n>>> 全部 ${pass.length} 项检查通过${skip.length ? `（${skip.length} 项因环境缺失跳过）` : ""}`);
+
+// ---------- 3. 0.2 预设声明（patch insert）适配 ----------
+{
+  const hostSource = readFileSync(join(here, "host.js"), "utf8");
+  ok(/coreMajorVersion/.test(hostSource), "host 含 core 版本判定（0.1.5 目录 / 0.2 patch 双路径）");
+  ok(/coreMajorVersion\(\) < 2\) return/.test(hostSource), "0.1.5 跳过 patch 写入（版本守卫）");
+  try {
+    const host = await import(pathToFileURL(join(here, "host.js")).href);
+    ok(typeof host.buildPresetInsertBlock === "function" && typeof host.upsertPresetBlock === "function"
+      && typeof host.removePresetBlock === "function", "preset 声明纯函数已导出");
+    const meta = readFileSync(join(here, "presets/mimo/preset.yml"), "utf8");
+    const svc = readFileSync(join(here, "presets/mimo/agent.cordis.yml"), "utf8");
+    const block = await host.buildPresetInsertBlock(meta, svc);
+    ok(/^# .*mimo-extension[\s\S]*\n- insert:\n/.test(block), "生成块为 insert 形式（0.2 新建 entry 唯一入口）");
+    ok(block.includes("- id: preset-dsh-mimo-mode"), "块含锚 id");
+    ok(block.includes("id: dsh-mimo-mode"), "config.id 对齐会话绑定的 agentPreset 值");
+    ok(block.includes("@deepseek-ai/dsh-agent-preset"), "name 指向官方 preset 包");
+    ok(!block.includes("!!js"), "!!js 已按平台求值（无未知 tag 进 patch）");
+    ok(/disabled: false/.test(block) && /disabled: true/.test(block), "平台求值正确（linux: bash 可用 / pwsh 禁用）");
+    const base = "# 现有 patch\n- id: ui-chat\n  name: x\n";
+    const v1 = host.upsertPresetBlock(base, block);
+    const v2 = host.upsertPresetBlock(v1, block);
+    const count = (t) => (t.match(/- id: preset-dsh-mimo-mode/g) || []).length;
+    ok(count(v1) === 1 && count(v2) === 1, `upsert 幂等（首次/重复各 1 份，got ${count(v1)}/${count(v2)}）`);
+    ok(v2.includes("- id: ui-chat"), "upsert 不破坏其它条目");
+    const v3 = host.removePresetBlock(v2);
+    ok(!v3.includes("preset-dsh-mimo-mode"), "remove 干净（含块注释）");
+    ok(v3.includes("- id: ui-chat"), "remove 不影响其它条目");
+  } catch (error) {
+    ok(false, `preset 声明函数不可用：${String(error.message || error).slice(0, 120)}`);
+  }
+}
