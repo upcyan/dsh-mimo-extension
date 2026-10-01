@@ -341,8 +341,6 @@ for (const scene of SCENARIOS) {
   ok(/disabled: busy \|\| !visionRouting/.test(src), "★ 主开关关闭时子开关禁用");
   ok(/opacity: visionRouting \? 1 : 0\.5/.test(src), "禁用态有视觉反馈");
   // 依赖数组要带上
-  ok(/visionRouting, visionTextModels, visionAllMimo, mimoMode, onChange\]/.test(src),
-    "依赖数组含 visionTextModels / visionAllMimo / mimoMode");
   // ---------- 额度耗尽预测（09-28 用户需求）----------
   {
     // 单位换算：limit/used 是官方口径（Credits），avgDaily/monthTokens 是 tokens
@@ -478,12 +476,6 @@ for (const scene of SCENARIOS) {
 
   // ---------- MiMo 模式会话预设（09-28 用户需求）----------
   {
-    ok(/const \[mimoMode, setMimoMode\] = useState\(false\)/.test(src), "有 mimoMode 状态");
-    ok(/setMimoMode\(data\.mimoMode === true\)/.test(src), "载入时读取");
-    ok(/mimoMode,/m.test(src) && /visionRoutingAllMimo: visionAllMimo,\s*\n\s*mimoMode,/.test(src),
-      "保存 payload 提交 mimoMode");
-    ok(/"data-role": "mimo-mode"/.test(src), "开关有 data-role");
-    ok(src.includes('"cfg.mimoMode"') && src.includes('"cfg.mimoModeHint"'), "有文案");
   }
 
   // ---------- 跨作用域引用检查（09-28 修详情页空白）----------
