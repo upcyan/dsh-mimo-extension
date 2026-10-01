@@ -886,12 +886,8 @@ if (loaded) {
     const findLine = (re) => lines.findIndex((l) => re.test(l));
     const regLine = findLine(/userSettings = scope;/);
     const visLine = findLine(/deps\.syncVisionRouting\?\.\(\)/);
-    const modeLine = findLine(/deps\.syncMimoMode\?\.\(\)/);
-    ok(regLine > 0 && visLine > regLine && modeLine > regLine,
-      `★ 启动同步必须在 register 之后（register@${regLine + 1}，vision@${visLine + 1}，mimoMode@${modeLine + 1}）`);
-    // POST 处的同步天然在 register 后，不受影响
-    ok(lines.some((l) => /deps\.syncMimoMode\?\.\(\)/.test(l) && lines.indexOf(l) > modeLine),
-      "设置变更后的同步仍在（POST 路径）");
+    ok(regLine > 0 && visLine > regLine,
+      `★ 启动同步必须在 register 之后（register → vision 顺序）`);
   }
 
   // ---------- 视觉路由覆盖自建小米渠道（09-28 用户反馈）----------

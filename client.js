@@ -372,8 +372,6 @@
       "view.yearlyNote": "年度套餐：额度在整个周期内共用，没有月度上限。",
       "pill.popover.usedFrame": "{frame}已用",
     
-      "cfg.mimoMode": "MiMo 模式（会话预设）",
-      "cfg.mimoModeHint": "安装「MiMo 模式」会话预设：PTC/Code Mode 呈现（工具目录收进一个 run_code，模型写 TypeScript 串多步，省 input token）+ 1M 上下文自动压缩（75% 触发 / 保留 22%）。安装后新建会话，在预设选择器选「MiMo 模式」、模型选 mimo-v2.6-flash。关闭时移除该预设（已选它的会话不受影响）。",
     
       "view.legendCache": "缓存命中输入",
       "view.legendMiss": "未命中输入",
@@ -542,8 +540,6 @@
       "view.yearlyNote": "Yearly plan: the quota is shared across the whole period — there is no monthly cap.",
       "pill.popover.usedFrame": "Used ({frame})",
     
-      "cfg.mimoMode": "MiMo mode (session preset)",
-      "cfg.mimoModeHint": "Installs the \"MiMo mode\" session preset: PTC/Code Mode presentation (the whole tool catalog collapses into one run_code tool — the model writes TypeScript to chain steps, saving input tokens) plus 1M-context auto-compaction (75% trigger / 22% retention). After installing, start a session, pick \"MiMo mode\" in the preset selector, and set the model to mimo-v2.6-flash. Turning it off removes the preset (sessions already using it are unaffected).",
     
       "view.legendCache": "cached input",
       "view.legendMiss": "uncached input",
@@ -2935,7 +2931,6 @@
       // 全部模型都声明 image —— 覆盖别名模型与未来新模型。
       const [visionAllMimo, setVisionAllMimo] = useState(false);
       // 「MiMo 模式」会话预设开关（安装/移除 ~/.agent-presets/dsh-mimo-mode）
-      const [mimoMode, setMimoMode] = useState(false);
       const [busy, setBusy] = useState(false);
       const [message, setMessage] = useState(null); // {kind:'ok'|'err', text}
 
@@ -2952,7 +2947,6 @@
             setVisionRouting(data.visionRouting === true);
             setVisionTextModels(data.visionRoutingTextModels === true);
             setVisionAllMimo(data.visionRoutingAllMimo === true);
-            setMimoMode(data.mimoMode === true);
           })
           .catch((error) => {
             if (alive) setMessage({ kind: "err", text: error instanceof Error ? error.message : String(error) });
@@ -3014,7 +3008,6 @@
             visionRouting,
             visionRoutingTextModels: visionTextModels,
             visionRoutingAllMimo: visionAllMimo,
-            mimoMode,
           };
           // Cookie 留空 = 不改；勾选清除 = 写空串
           if (clearCookie) payload.cookie = "";
@@ -3052,7 +3045,7 @@
         } finally {
           setBusy(false);
         }
-      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, visionTextModels, visionAllMimo, mimoMode, onChange]);
+      }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, visionTextModels, visionAllMimo, onChange]);
 
       const labelStyle = {
         display: "block",
@@ -3503,44 +3496,6 @@
                 "span",
                 { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
                 t("cfg.visionAllMimoHint"),
-              ),
-            ),
-          ),
-          // ── MiMo 模式（会话预设）：与视觉路由无关的独立能力，加分隔线 ──
-          h(
-            "label",
-            {
-              style: {
-                fontSize: "12px",
-                display: "flex",
-                gap: "6px",
-                alignItems: "flex-start",
-                lineHeight: 1.5,
-                paddingTop: "10px",
-                borderTop: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))",
-                cursor: busy ? "pointer" : "default",
-                opacity: busy ? 0.6 : 1,
-              },
-            },
-            h("input", {
-              type: "checkbox",
-              checked: mimoMode,
-              disabled: busy,
-              onChange: (e) => {
-                setMimoMode(e.currentTarget.checked);
-                setMessage(null);
-              },
-              style: { marginTop: "2px" },
-              "data-role": "mimo-mode",
-            }),
-            h(
-              "span",
-              null,
-              t("cfg.mimoMode"),
-              h(
-                "span",
-                { style: { display: "block", opacity: 0.75, fontSize: "11px", marginTop: "2px" } },
-                t("cfg.mimoModeHint"),
               ),
             ),
           ),
