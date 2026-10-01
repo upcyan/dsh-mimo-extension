@@ -2131,21 +2131,13 @@ export function apply(ctx, config) {
   //        → 落盘计数器快照 → 内置统计快照 → 空值。
   // 把「默认模型」放第一位，是因为它才是"用户此刻选的是什么"；
   // 事件流的语义是"最近一次真的用过什么"，切了模型但没发消息时会滞后。
-  // ── 「MiMo 模式」会话预设：安装 / 移除 ─────────────────────────────
-  // 预设是**文件**（agent.cordis.yml），放在用户根 `<home>/.agent-presets/`，
-  // 不是运行时注册 —— 所以开关的实现就是"写目录 / 删目录"。
-  // 预设内容 = 官方 PTC 预设 + 1M 上下文自动压缩 owner（0.75/0.22），
-  // 结构参考 dsh-glm-mode 的 glm 预设（MIT，已在生产环境验证）。
-  //
-  // ⚠ 幂等：每次启动 / 开关变化都执行 —— 模板随插件升级更新时，
-  //   已安装的预设也要跟着更新（以插件包内模板为准整目录重写）。
-
-
+  // （会话预设的安装/移除已迁到独立插件 dsh-preset-integrator —— 见 AGENTS 27。）
 
   // ── 每日 Credits 聚合的持久化 ──────────────────────────────────────
   // 本地 days 来自存活会话的重算：会话删除/重启会丢历史。趋势对比需要
   // 稳定历史，所以每天一行落盘（当天滚动覆盖，历史天只增不减），
-  // 同时记录「MiMo 模式」开关时间线（对比的时段边界）。
+  // 同时保留 modeTimeline（前后日均对比的时段边界；开关写入方已随预设迁到
+  // dsh-preset-integrator，本插件只读盘里已有的时间线算对比）。
 
   function dailyCreditsPath() {
     const home = dshHomeDir();
@@ -2158,7 +2150,7 @@ export function apply(ctx, config) {
   /** 读落盘的完整历史（含本地重算覆盖不到的旧天），并算出模式前后日均。 */
 
 
-  /** 定位 DSH home（预设根 `<home>/.agent-presets` 的父目录）。 */
+  /** 定位 DSH home（daily-credits 落盘目录 `<home>/dsh-mimo-extension/` 的父目录）。 */
   function dshHomeDir() {
     // ① 环境变量（core 进程由应用启动，通常带 DSH_HOME）
     if (typeof process.env.DSH_HOME === "string" && process.env.DSH_HOME.trim()) {

@@ -37,8 +37,7 @@
     "cordis.patch.yml",
     "README.md",
     "screenshots.json",
-    "assets",
-    "presets"
+    "assets"
   ],
   "dsh": {
     "bundle": {

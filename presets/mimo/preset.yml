@@ -1,3 +1,0 @@
-name: MiMo 模式
-description: 为小米 MiMo（mimo-v2.6 系列）调优的编码 Agent 预设：全量工具目录以 PTC/Code Mode 呈现（程序化工具调用），预设内自带 1M 上下文自动压缩（阈值 75% / 保留 22%），声明原生多模态。建议搭配模型 mimo-v2.6-flash 使用。
-order: 9

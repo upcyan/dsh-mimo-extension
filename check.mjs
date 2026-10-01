@@ -1148,34 +1148,3 @@ if (fail.length > 0) {
 }
 console.log(`\n>>> 全部 ${pass.length} 项检查通过${skip.length ? `（${skip.length} 项因环境缺失跳过）` : ""}`);
 
-// ---------- 3. 0.2 预设声明（patch insert）适配 ----------
-{
-  const hostSource = readFileSync(join(here, "host.js"), "utf8");
-  ok(/coreMajorVersion/.test(hostSource), "host 含 core 版本判定（0.1.5 目录 / 0.2 patch 双路径）");
-  ok(/coreMajorVersion\(\) < 2\) return/.test(hostSource), "0.1.5 跳过 patch 写入（版本守卫）");
-  try {
-    const host = await import(pathToFileURL(join(here, "host.js")).href);
-    ok(typeof host.buildPresetInsertBlock === "function" && typeof host.upsertPresetBlock === "function"
-      && typeof host.removePresetBlock === "function", "preset 声明纯函数已导出");
-    const meta = readFileSync(join(here, "presets/mimo/preset.yml"), "utf8");
-    const svc = readFileSync(join(here, "presets/mimo/agent.cordis.yml"), "utf8");
-    const block = await host.buildPresetInsertBlock(meta, svc);
-    ok(/^# .*mimo-extension[\s\S]*\n- insert:\n/.test(block), "生成块为 insert 形式（0.2 新建 entry 唯一入口）");
-    ok(block.includes("- id: preset-dsh-mimo-mode"), "块含锚 id");
-    ok(block.includes("id: dsh-mimo-mode"), "config.id 对齐会话绑定的 agentPreset 值");
-    ok(block.includes("@deepseek-ai/dsh-agent-preset"), "name 指向官方 preset 包");
-    ok(!block.includes("!!js"), "!!js 已按平台求值（无未知 tag 进 patch）");
-    ok(/disabled: false/.test(block) && /disabled: true/.test(block), "平台求值正确（linux: bash 可用 / pwsh 禁用）");
-    const base = "# 现有 patch\n- id: ui-chat\n  name: x\n";
-    const v1 = host.upsertPresetBlock(base, block);
-    const v2 = host.upsertPresetBlock(v1, block);
-    const count = (t) => (t.match(/- id: preset-dsh-mimo-mode/g) || []).length;
-    ok(count(v1) === 1 && count(v2) === 1, `upsert 幂等（首次/重复各 1 份，got ${count(v1)}/${count(v2)}）`);
-    ok(v2.includes("- id: ui-chat"), "upsert 不破坏其它条目");
-    const v3 = host.removePresetBlock(v2);
-    ok(!v3.includes("preset-dsh-mimo-mode"), "remove 干净（含块注释）");
-    ok(v3.includes("- id: ui-chat"), "remove 不影响其它条目");
-  } catch (error) {
-    ok(false, `preset 声明函数不可用：${String(error.message || error).slice(0, 120)}`);
-  }
-}

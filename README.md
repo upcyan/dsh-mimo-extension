@@ -488,6 +488,12 @@ node verify-fix.mjs     # 端到端，需真 Cookie
 `{id,name,description,order,plugins:[服务行]}` definition 注册，`!!js` 表达式按平台
 求值）——详见 dsh-preset-switch/lib/index.js 尾部注释。**旧会话 resume 恢复。**
 
+> **（10-01 更新）preset-switch 已由新插件 `dsh-preset-integrator` 取代**：
+> 会话预设的列出/切换/安装-移除机制整体迁到该插件，本插件（dsh-mimo-extension）
+> 已清空全部 preset 相关代码与模板（`presets/mimo/` 删除、`mimoMode` 开关移除、
+> patch 声明增删函数删除）。上文 09-30 的 preset-switch 记录保留为历史；
+> **现指路一律以 dsh-preset-integrator 为准**，本插件不再接入预设功能。
+
 ### 0.2 设置通道适配（09-30 深夜完成）
 
 - host 新增 **`export const Config = buildMimoSettingsSchema(S)`**（静态导出，
