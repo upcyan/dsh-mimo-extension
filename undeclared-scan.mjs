@@ -52,14 +52,54 @@ const GLOBALS = new Set(
 /** 把「非换行字符」换成空格 —— 保留换行与**总长度**，这样下标能直接映射回原文件行号。 */
 const zap = (m) => m.replace(/[^\n]/g, " ");
 
-/** 抹掉注释与字符串字面量（保留换行与长度）。模板整体抹掉：CSS 噪声都在那里。 */
+/**
+ * 抹掉注释与字符串字面量（保留换行与**总长度**）。
+ *
+ * ⚠ 必须是**单趟扫描**，不能用连续 .replace 配对引号：
+ * 09-30 踩过 —— 英文文案里的撇号（"plugin's"）被单引号配对正则跨段配对，
+ * 两个 ' 之间的大段代码被当字符串抹掉（声明名 380 → 167），
+ * 于是 setLegendPick/setUiPrefs 被误报成「全文件未声明」。
+ * 现在逐字符判定：注释/字符串各自独立吞到自己的终结符，互不串味。
+ */
 export function stripCode(raw) {
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, zap)
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, lead) => lead + zap(m.slice(lead.length)))
-    .replace(/`(?:\\.|[^`\\])*`/g, zap)
-    .replace(/'(?:\\.|[^'\\])*'/g, zap)
-    .replace(/"(?:\\.|[^"\\])*"/g, zap);
+  const n = raw.length;
+  const out = new Array(n);
+  let i = 0;
+  while (i < n) {
+    const c = raw[i];
+    const c2 = raw[i + 1];
+    if (c === "/" && c2 === "*") {                       // 块注释
+      let j = i + 2;
+      while (j < n && !(raw[j] === "*" && raw[j + 1] === "/")) j += 1;
+      j = Math.min(n, j + 2);
+      out.push(zap(raw.slice(i, j)));
+      i = j;
+      continue;
+    }
+    if (c === "/" && c2 === "/") {                       // 行注释
+      let j = i;
+      while (j < n && raw[j] !== "\n") j += 1;
+      out.push(zap(raw.slice(i, j)));
+      i = j;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === "`") {          // 三种字符串
+      const q = c;
+      let j = i + 1;
+      while (j < n) {
+        if (raw[j] === "\\") { j += 2; continue; }
+        if (raw[j] === q) { j += 1; break; }
+        if (raw[j] === "\n" && q !== "`") break;        // 未闭合的行字符串不越行
+        j += 1;
+      }
+      out.push(zap(raw.slice(i, j)));
+      i = j;
+      continue;
+    }
+    out.push(c);
+    i += 1;
+  }
+  return out.join("");
 }
 
 /**

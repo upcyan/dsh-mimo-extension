@@ -1123,6 +1123,16 @@ if (loaded) {
     `★ 无引用未声明的 setXxx（缺声明会让 /summary 500）${bad.size ? `：${describeUndeclared(bad)}` : ""}`);
 }
 
+// ---------- 0.2 写通道：writable 必须跟 POST 的回退通道一致 ----------
+// 0.2 下 settings.register 可能静默失败（scope null → writable false），
+// 但 POST 有 SettingsForms.update 回退 —— 两边不一致时表单保存按钮被永久禁用
+// （0.2 实测：GET 回 writable:false、Save disabled）。反向验证过（去掉回退即报红）。
+{
+  const hostSource = readFileSync(join(here, "host.js"), "utf8");
+  ok(/writable:\s*Boolean\(userSettings\)\s*\|\|\s*typeof settingsCtx\?\.settings\?\.update/.test(hostSource),
+    "★ writable 跟随 0.2 写回退通道（否则表单保存按钮永久禁用）");
+}
+
 // ---------- 输出 ----------
 console.log("通过：");
 for (const line of pass) console.log(`  ✓ ${line}`);

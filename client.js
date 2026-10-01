@@ -203,6 +203,16 @@
     // 裸 setInterval/clearInterval 被 closureTraps 拦截（TIMER_REDIRECT），
     // 组件里创建定时器一律走它。apply 时从 ctx 取，组件闭包读这里。
     let timerCtx = null;
+    // 0.2 侧栏导航服务（inject "layout"）：详情页的「插件设置」跳转入口读它。
+    let layoutCtx = null;
+    /** 打开侧栏「插件」页 —— 0.2 起配置表单住在这里（官方 plugins.*.config 槽）。 */
+    function openPluginPage() {
+      try {
+        layoutCtx?.layout?.selectPanel?.("plugins");
+      } catch {
+        /* ctx 是 Proxy：读未声明属性直接抛（可选链挡不住），兜底吞掉 */
+      }
+    }
     const react = require("react");
     const { createElement: h, useCallback, useEffect, useMemo, useRef, useState } = react;
     // react-dom 在平台 seed 表里（`staticModules` 含 "react-dom"），
@@ -245,6 +255,8 @@
       "view.label": "MiMo 用量",
       "view.title": "MiMo 用量与额度",
       "view.refresh": "刷新",
+      "view.openSettings": "插件设置",
+      "view.openSettingsHint": "打开插件页并编辑本插件的配置（Cookie / 胶囊位置 / 视觉路由等）",
       "view.loading": "加载中…",
       "view.official": "数据来源：小米 MiMo 官方接口",
       "view.local": "数据来源：本地估算（官方接口不可用）",
@@ -413,6 +425,8 @@
       "view.label": "MiMo Usage",
       "view.title": "MiMo usage & quota",
       "view.refresh": "Refresh",
+      "view.openSettings": "Plugin settings",
+      "view.openSettingsHint": "Open the plugin page to edit this plugin's configuration (cookie / pill position / vision routing, …)",
       "view.loading": "Loading…",
       "view.official": "Source: Xiaomi MiMo official API",
       "view.local": "Source: local estimate (official API unavailable)",
@@ -2087,6 +2101,24 @@
               "button",
               {
                 type: "button",
+                onClick: () => openPluginPage(),
+                title: t("view.openSettingsHint"),
+                style: {
+                  border: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15))",
+                  background: "var(--dsw-alias-bg-layer-1, #fff)",
+                  borderRadius: "8px",
+                  padding: "5px 12px",
+                  cursor: "pointer",
+                  fontSize: "12px",
+                  color: "inherit",
+                },
+              },
+              t("view.openSettings"),
+            ),
+            h(
+              "button",
+              {
+                type: "button",
                 onClick: () => load(true),
                 style: {
                   border: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15))",
@@ -2893,8 +2925,8 @@
           ),
         ),
 
-        // 配置区（Cookie / 套餐总量 / 胶囊位置 / 工具栏换行）
-        h("div", { style: { marginTop: narrow ? "10px" : "14px" } }, h(MimoSettingsForm, { onChange: () => load(true) })),
+        // 配置表单已迁到插件页（0.2 官方 plugins.row.config 槽）：
+        // 侧栏「插件」→ dsh-mimo-extension → 配置。详情页只保留头部跳转入口。
       );
     }
 
@@ -3671,6 +3703,7 @@
 
     function apply(ctx) {
       timerCtx = ctx;
+      layoutCtx = ctx;
       // 兼容旧包名/别名行残留，避免重复注册
       const entryName = ctx.fiber?.entry?.options?.name;
       // 兼容旧包名/别名行残留，避免重复注册：只有 entry 名明确**不是**本插件时才跳过。
@@ -3730,6 +3763,27 @@
           viewRegistered = false;
           return;
         }
+        // 0.2 配置页：自带配置的插件把表单注册进**插件页**（ui-plugin-manager
+        // README「配置页」的官方槽）。row 配置的键 = <组合包名>#<行 id>，
+        // 对应 cordis.patch.yml 里的 `- id: mimo-extension`。
+        // view === 'summary' 给行卡片的摘要行；'page' 才是带保存按钮的表单。
+        ctx.slots.inject("plugins.row.config", () =>
+          ctx.slots.register(
+            {
+              name: "plugins.row.config",
+              key: "dsh-mimo-extension#mimo-extension",
+              locale: NS,
+            },
+            (slotProps) =>
+              slotProps?.view === "summary"
+                ? h(
+                    "span",
+                    { style: { fontSize: "12px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
+                    t("view.title"),
+                  )
+                : h(MimoSettingsForm, {}),
+          ),
+        );
         ctx.slots.inject("conversation.view", () => {
           disposeView = ctx.slots.register(
             {
@@ -3946,7 +4000,8 @@
     // locale 必须与 slots 一起声明：apply 内会读取 ctx.locale，
     // 未声明的服务属性读取会被 Cordis 的上下文 Proxy 直接抛错。
     // timer：0.2.0 客户端定时器服务（未声明的 TIMER_VERBS 读取会被 ctx 代理拒绝）
-    exports.inject = ["slots", "locale", "timer"];
+    // layout：0.2 侧栏导航（selectPanel）——详情页「插件设置」跳转入口用
+    exports.inject = ["slots", "locale", "timer", "layout"];
     exports.apply = apply;
     return exports;
   }

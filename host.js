@@ -2434,7 +2434,13 @@ export function apply(ctx, config) {
                       visionRoutingAllMimo: m.visionRoutingAllMimo === true,
                       billingTypeOverrides: m.billingTypeOverrides ?? {},
                       pricing: m.pricing ?? {},
-                      writable: Boolean(userSettings),
+                      // 0.2：settings.register 可能静默失败（scope 为 null），但 POST
+                      // 有 SettingsForms.update 回退通道（见下方 POST 分支）。
+                      // writable 必须跟着**写通道**走，否则表单保存按钮被永久禁用
+                      // （0.2 实测 writable:false → 界面 disabled）。
+                      writable:
+                        Boolean(userSettings) ||
+                        typeof settingsCtx?.settings?.update === "function",
                       // 登录是否失效 + 失败原因（供界面给「重新登录」引导）。
                       // 从缓存里的官方结果读，不额外打网络。
                       authExpired: officialCache?.authExpired === true,

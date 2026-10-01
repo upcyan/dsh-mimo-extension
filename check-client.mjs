@@ -434,10 +434,28 @@ for (const scene of SCENARIOS) {
       const bare = [...code.matchAll(/(?<![.\w$])(setInterval|clearInterval|setTimeout|clearTimeout|fetch)\s*\(/g)].map((m) => m[1]);
       ok(bare.length === 0,
         `★ 无裸定时器/fetch 调用（0.2.0 closureTraps 当场抛错、整槽消失）${bare.length ? `：${[...new Set(bare)].join(",")}` : ""}`);
-      ok(/inject = \["slots", "locale", "timer"\]/.test(src),
+      ok(/inject = \["slots", "locale", "timer"(, "layout")?\]/.test(src),
           "已声明 inject timer（0.2.0 定时器服务的官方入口）");
       ok(/timerCtx\.interval\(/.test(src),
           "胶囊轮询走 ctx.interval（官方 timer 服务，返回 disposer）");
+    }
+
+    // ---------- 0.2 设置迁到插件页 + 详情页跳转入口 ----------
+    // 0.2 起配置住在**插件页**（侧栏「插件」→ 本插件 → 配置），官方槽
+    // plugins.row.config 的键 = <组合包名>#<行 id>（见 ui-plugin-manager README）。
+    // 详情页不再内嵌表单，只留跳转入口（ctx.layout.selectPanel("plugins")）。
+    {
+      const viewSeg = src.slice(src.indexOf("function MimoUsageView("), src.indexOf("function MimoSettingsForm("));
+      ok(!/h\(MimoSettingsForm/.test(viewSeg),
+        "★ 详情页不再内嵌配置表单（0.2 已迁到插件页）");
+      ok(/inject\("plugins\.row\.config"/.test(src) && /dsh-mimo-extension#mimo-extension/.test(src),
+        "★ 配置表单注册进插件页 plugins.row.config（键 = 组合包#行 id）");
+      ok(/exports\.inject = \["slots", "locale", "timer", "layout"\]/.test(src),
+        "inject 声明含 layout（读 ctx.layout 必须声明，否则 Proxy 抛）");
+      ok(/selectPanel\??\.?\("plugins"\)/.test(src),
+        "★ 跳转入口走 ctx.layout.selectPanel('plugins')（0.2 官方侧栏导航）");
+      ok(/t\("view\.openSettings"\)/.test(src),
+        "详情页有「插件设置」入口（zh/en 文案由 i18n 成对断言兜底）");
     }    // (view.legendHint 中英成对由下面的 `t() 用到的 key 都有中/英文案` 兜底，不重复断言)
     // 🔴 09-28 修正：不要用 `data-conversation-composer-overlay` 隐藏手柄 ——
     // 它的语义是"本视图自带滚动容器"，会把 viewArea 锁成固定高度，

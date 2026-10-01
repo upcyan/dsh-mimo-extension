@@ -429,3 +429,73 @@ node verify-fix.mjs     # 端到端，需真 Cookie
 - Token Plan 套餐：套餐内调用不额外扣费，只消耗套餐 token 配额；胶囊和详情页显示剩余百分比
 - 按量计费：按 provider/model 单价估算（元/百万 tokens），缓存命中按 `cacheRead` 单价
 - 估算值仅供参考，实际扣费以小米 MiMo 官方账单为准
+
+## 0.2.0-rc.2 升级适配（2026-09-30 排查记录）
+
+**状态：适配良好，无需改动。** 排查结论留档，供再遇同类报错时快速判读：
+
+- **client 半**：`inject = ["slots","locale"]`（两版核心都有）；console `[dsh-mimo-extension] client 已装载`
+  正常；`conversation.view` 注册形态与 0.2 官方一致
+  （`ctx.slots.register({name,id,order,locale,label}, Component)` + `slots.inject` 软依赖）。
+- **host 半**：`ctx.inject(["webServer"], …)` + `kind:"prefix"` 软依赖注册在 0.2 **仍工作**——
+  实测 `curl http://127.0.0.1:3081/dsh-mimo-extension/session → 200 {"ok":true,…}`。
+  这是"profile 插件 HTTP 路由在 0.2 是否可用"的正例证据（对照：proxy 的诊断路由 404 是它自身问题）。
+- **🔴 `GAP is not defined` 是历史残留日志，不是现行 bug**：那是 09-29「详情页空白」事故的
+  console 记录，出现在 **0.1.5 时段 bundle**（`index-BKQ_L1z6.js`，只存在于 previous-good）。
+  三重证据：① 现源码 `const GAP` 在工厂作用域（line 2328，之后所有使用点深度从未跌回定义前深度）
+  ② 升级前备份（09-30 08:03 backup）的 client.js 与当前 **md5 一致** ③ 注释本身记载了该修复。
+  再看到它直接按"旧 tab 的累积日志"处理，别重开排查。
+- **React #130 / #300、`assistant-step withdrew materialized target`**：0.2 时段用 playwright
+  遍历 5 个会话**未复现**；与官方 chat/tool/trajectory 的事件流错误同批出现，疑似官方 rc 噪声
+  或特定会话条件 → 留观，出现时先抓带行号栈再定位。
+- **旧设置未迁入**：`settings.yaml.imported` 的 `dsh-mimo-extension` 节（mimo.cookie /
+  planTotalTokens / pillPosition / wrapToolbar / visionRouting…，字段与现 schema 对齐）等待
+  **手动迁移**进 `profiles/web/cordis.patch.yml`——新存储条目是 `- id: mimo-extension
+  name: dsh-mimo-extension config: …`。⚠ entry id（`mimo-extension`）≠ register ns
+  （`dsh-mimo-extension`），自动迁移按 entry id 找不到 ns 而被拒，这是 09-30 自动迁移只成功 4/11 的原因之一。
+  `LEGACY_SETTINGS_NS = "dsh-mimo-usage"` 是旧共用节的回退读（那个节已被拆分，不单独迁移）。
+- **console 时段判读**：`index-BKQ_L1z6 / imeComposition-HyCEIWkp / index-DuJc5FYg` = 0.1.5 旧前端；
+  `index-5SrrfWpU` = 0.2 现行（`@deepseek-ai/dsh-web-frontend/dist/assets` 只有它 + vendor-CCJJTK99）。
+
+### 🔴 resume 报 `Unknown agent preset: dsh-mimo-mode`（09-30 升级事故，已恢复）
+
+**症状**：恢复旧会话报 `resume failed … RemoteError: Unknown agent preset: dsh-mimo-mode (gateway/internal)`。
+
+**机制**：「MiMo 模式」预设是**文件目录**（`$DSH_HOME/.agent-presets/dsh-mimo-mode/`，
+模板在插件包 `presets/mimo/`），host 按**用户开关** `mimo.mimoMode === true` 在每次启动时
+安装（整目录重写）/关闭时删除。
+
+**事故链**：0.2 升级启动（16:05）时——迁移 config（含 `mimoMode: true`）尚未写入 patch
+（当日 17:4x 才手动迁移）+ 0.2 下 settings scope 链路异常 → `want=false` → 目录未装/被删
+→ 绑定该 preset 的旧会话 resume 失败。
+
+**恢复**：从 `presets/mimo/` 模板复制两文件到 `.agent-presets/dsh-mimo-mode/` 即可
+（与 glm 预设同构）。**重启 core 后**（迁移 config 生效，`mimoMode: true`）插件会按
+幂等逻辑自动重装该目录——永久闭环，无需再手动。
+
+**⚠ 但目录恢复 ≠ 立即可见/可切**：preset 的**列出与切换层**由市场插件
+`@dsh-external/dsh-preset-switch` 驱动（`ctx.get('agentPresets')` 列出、
+`settings.update('agent-presets', {default})` 写默认、会话绑定的
+`agent-preset/selected` 事件也是它写的）——该插件 0.2.0-rc.2 因 peerDependencies
+（`dsh-commands/dsh-agent-presets/dsh-settings ^0.1.0-rc.6`）被 core 跳过，preset
+选择器里只剩官方 Standard/PTC（playwright 实证）。按"市场插件不改、保持禁用等
+开发者适配"方针处理；**它适配后，已恢复的目录与数据即刻生效**。
+
+**（09-30 晚更新）preset-switch 已由本会话完成 0.2.0 适配并重启生效**：`/preset`
+可用清单已包含 `dsh-mimo-mode · MiMo 模式` 与 `glm · GLM 模式`（playwright 实证）。
+适配内容：peer 兼容 0.2.0-rc.2 + settings.register 守卫（0.2 未装配时降级）+
+**目录 preset 桥**（0.2 registry 不扫 `.agent-presets/` 目录，host 侧扫目录组装
+`{id,name,description,order,plugins:[服务行]}` definition 注册，`!!js` 表达式按平台
+求值）——详见 dsh-preset-switch/lib/index.js 尾部注释。**旧会话 resume 恢复。**
+
+### 0.2 设置通道适配（09-30 深夜完成）
+
+- host 新增 **`export const Config = buildMimoSettingsSchema(S)`**（静态导出，
+  schemastery 从插件自身位置上链解析）——0.2 设置系统从 `entry.fiber.runtime.Config`
+  读 schema（要求 toJSON），没有它 describe 静默跳过本 ns、自动生成设置页不出现、
+  旧配置迁移被拒。**这是"设置不可写/配置丢失"系列问题的 0.2 正解**。
+- 生效后：设置 → 插件 → dsh-mimo-extension 出现**自动生成的配置表单**
+  （`autoGenerate ?? true`），写入走 `remote.settings.mutate(ns, pathOps, revision)`。
+- `settings.register` 旧 API 在 0.2 已不可依赖（preset-switch 守卫同款），
+  相关链路（register/scope.get）失败会静默退化——**不得再依赖 scope.get 做
+  开关判定**，改读 patch config（`syncPresetDeclaration` 的模式）。
