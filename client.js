@@ -207,10 +207,19 @@
     let layoutCtx = null;
     /** 打开侧栏「插件」页 —— 0.2 起配置表单住在这里（官方 plugins.*.config 槽）。 */
     function openPluginPage() {
+      // ① 先开插件页面板（保底：即使深链不可用，也落在插件页而非无处可去）
       try {
         layoutCtx?.layout?.selectPanel?.("plugins");
       } catch {
         /* ctx 是 Proxy：读未声明属性直接抛（可选链挡不住），兜底吞掉 */
+      }
+      // ② 再深链到本插件详情页（官方 openBundle：selectPanel + setView(kind:package)）。
+      //    独立 try：深链失败不回滚已打开的面板 —— 深链只是「直达」，面板才是下限。
+      //    pluginNavigation 只在插件页 fiber 存活期间 provide，读不到就停在 ①。
+      try {
+        layoutCtx?.pluginNavigation?.openBundle?.("dsh-mimo-extension");
+      } catch {
+        /* 同上：服务未就绪 / Proxy 抛 —— 静默降级到插件页根 */
       }
     }
     const react = require("react");
@@ -4001,7 +4010,10 @@
     // 未声明的服务属性读取会被 Cordis 的上下文 Proxy 直接抛错。
     // timer：0.2.0 客户端定时器服务（未声明的 TIMER_VERBS 读取会被 ctx 代理拒绝）
     // layout：0.2 侧栏导航（selectPanel）——详情页「插件设置」跳转入口用
-    exports.inject = ["slots", "locale", "timer", "layout"];
+    // pluginNavigation：0.2 插件页的深链（openBundle，由 ui-plugin-manager
+    //   经 ctx.reflect.provide 暴露）——让跳转直达本插件详情页而非插件页根
+    //   （官方消费样例：dsh-experimental-client-ui-voice-input 同款 inject）
+    exports.inject = ["slots", "locale", "timer", "layout", "pluginNavigation"];
     exports.apply = apply;
     return exports;
   }

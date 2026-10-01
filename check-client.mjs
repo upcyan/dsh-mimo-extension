@@ -434,7 +434,9 @@ for (const scene of SCENARIOS) {
       const bare = [...code.matchAll(/(?<![.\w$])(setInterval|clearInterval|setTimeout|clearTimeout|fetch)\s*\(/g)].map((m) => m[1]);
       ok(bare.length === 0,
         `★ 无裸定时器/fetch 调用（0.2.0 closureTraps 当场抛错、整槽消失）${bare.length ? `：${[...new Set(bare)].join(",")}` : ""}`);
-      ok(/inject = \["slots", "locale", "timer"(, "layout")?\]/.test(src),
+      // 用「包含」语义：inject 列表会随功能追加（layout/pluginNavigation…），
+      // 不锁死顺序与尾项，避免每次新增服务都要回头改这条。
+      ok(/inject = \[[^\]]*"timer"/.test(src),
           "已声明 inject timer（0.2.0 定时器服务的官方入口）");
       ok(/timerCtx\.interval\(/.test(src),
           "胶囊轮询走 ctx.interval（官方 timer 服务，返回 disposer）");
@@ -450,10 +452,17 @@ for (const scene of SCENARIOS) {
         "★ 详情页不再内嵌配置表单（0.2 已迁到插件页）");
       ok(/inject\("plugins\.row\.config"/.test(src) && /dsh-mimo-extension#mimo-extension/.test(src),
         "★ 配置表单注册进插件页 plugins.row.config（键 = 组合包#行 id）");
-      ok(/exports\.inject = \["slots", "locale", "timer", "layout"\]/.test(src),
+      ok(/exports\.inject = \[[^\]]*"layout"/.test(src),
         "inject 声明含 layout（读 ctx.layout 必须声明，否则 Proxy 抛）");
       ok(/selectPanel\??\.?\("plugins"\)/.test(src),
-        "★ 跳转入口走 ctx.layout.selectPanel('plugins')（0.2 官方侧栏导航）");
+        "★ 跳转入口走 ctx.layout.selectPanel('plugins')（0.2 官方侧栏导航保底）");
+      // 深链：必须开插件页后直达本插件详情页（openBundle），而非只落插件页根
+      ok(/openBundle\??\.?\(["']dsh-mimo-extension["']\)/.test(src),
+        "★ 深链直达本插件详情页（pluginNavigation.openBundle，官方反射 API）");
+      ok(/pluginNavigation/.test(src) && /inject = \[[^\]]*pluginNavigation[^\]]*\]/.test(src),
+        "inject 声明了 pluginNavigation（openBundle 由插件页 reflect.provide，必须注入才能读）");
+      ok(/selectPanel\??\.?\("plugins"\)[\s\S]{0,120}openBundle/.test(src),
+        "先 selectPanel 保底再深链（深链失败也已落在插件页，不回滚面板）");
       ok(/t\("view\.openSettings"\)/.test(src),
         "详情页有「插件设置」入口（zh/en 文案由 i18n 成对断言兜底）");
     }    // (view.legendHint 中英成对由下面的 `t() 用到的 key 都有中/英文案` 兜底，不重复断言)
