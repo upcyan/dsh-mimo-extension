@@ -850,12 +850,15 @@ if (loaded) {
   {
     const src = readFileSync(join(here, "host.js"), "utf8");
     ok(host.name === "mimo-extension", `插件 id = mimo-extension（实为 ${host.name}）`);
-    // ⚠ 10-01 同步：host.js 的 SETTINGS_NS 从全名 `dsh-mimo-extension` 改为**短名**
-    // `mimo-extension`，以与本插件 bundle patch（cordis.patch.yml）里那条 `- id:`
-    // 完全一致 —— DSH 的 configEditor.entries() 以 bundle patch 的 insert id 作为
-    // loader 条目的 options.id，而 settings.write(ns) 按 `row.options.id === ns` 查条目；
-    // 不一致时保存报 `No configurable plugin entry`（旧断言的字符串已过时）。
-    ok(/const SETTINGS_NS = "mimo-extension";/.test(src), "设置命名空间 = 短名（与 bundle patch id 一致）");
+    // 🔴 10-02 修正（plugin-settings-check 30/32 抓到的真 bug）：
+    // 0.2 实测（dsh --profile web --dump-config）loader 条目的 options.id 是**全名**
+    // `dsh-mimo-extension`（= cordis.patch.yml 的 `- id:`），settings.write(ns) /
+    // register(ns) 按 `row.options.id === ns` 查条目 → SETTINGS_NS 必须是**全名**。
+    // 10-01 曾误改成短名 `mimo-extension`（且本断言跟着写成"短名一致"，逻辑自相矛盾）
+    // → 保存报 `No configurable plugin entry`、用户配置段读不到。
+    // 实测：用户 Cookie 在 loader `config.mimo`（全名段），settings.yaml 无短名段。
+    ok(/const SETTINGS_NS = "dsh-mimo-extension";/.test(src),
+      "设置命名空间 = 全名（与 loader options.id / bundle patch - id 一致）");
     ok(/const LEGACY_SETTINGS_NS_FULL = "dsh-mimo-extension";/.test(src), "全名保留为迁移来源之一");
     // ★ 旧名必须**只**作为迁移来源保留
     ok(/const LEGACY_SETTINGS_NS = "dsh-mimo-usage";/.test(src), "保留旧命名空间常量作迁移来源");

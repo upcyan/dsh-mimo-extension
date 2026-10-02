@@ -50,8 +50,16 @@ const CACHE_TTL_MS = 60_000;
 // 历史：bundle patch 用的是短名 `mimo-extension`，而这里写的是全名
 // `dsh-mimo-extension` → 永远匹配不上 → 保存报 `No configurable plugin entry`。
 // 对照：dsh-ui-cyanmod 三处同名，所以它一直正常。
-const SETTINGS_NS = "mimo-extension";
-// 旧命名空间（本插件 2026-09-27 改名前），仅作为**迁移来源**读取。
+// 0.2 实测（--dump-config）：loader 条目的 options.id 是**全名** `dsh-mimo-extension`
+// （cordis.patch.yml 的 `- id: dsh-mimo-extension`），而 `settings.write(ns)` /
+// `register(ns)` 按 `row.options.id === ns` 查条目 —— 短名 `mimo-extension` 查不到，
+// 保存报 `No configurable plugin entry`。用户配置也存在全名段的 `config.mimo`。
+// ⚠ 别再改回短名：10-01 曾改成短名导致配置保存全挂（plugin-settings-check 30/32 抓到）。
+const SETTINGS_NS = "dsh-mimo-extension";
+// 迁移来源之一。⚠ 10-02 起它与 SETTINGS_NS **同值**（SETTINGS_NS 已改回全名，
+// 见上方说明）—— 保留它是因为迁移 for 循环按 [本常量, LEGACY_SETTINGS_NS] 遍历，
+// 且改名史里"全名"曾是旧名。**自读无害**：迁移函数先判当前段有无内容，
+// 有则直接 skip（走不到 for）；当前段为空时本段必然也为空 → 不会被选中。
 const LEGACY_SETTINGS_NS_FULL = "dsh-mimo-extension";
 /**
  * 重命名前的设置命名空间。
