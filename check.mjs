@@ -1237,6 +1237,25 @@ if (loaded) {
         "pickVolatile 对非字符串回落兜底");
     }
   }
+// ---------- 0.2 读**别人的**命名空间：必须走 configEditor ----------
+// `settings.get(ns)` 在 0.2 的 SettingsForms 上**不存在**（该类只有
+// describe/schema/update/mutate/write/replace）→ 调用必抛 → 被 catch 吞掉 →
+// 表现为「读不到 llm-pi-ai 命名空间」（视觉路由设置失败的真正原因，10-02）。
+// 官方 describe() 内部用的也是同一条路径：configEditor.configuration()。
+{
+  const hostSource = readFileSync(join(here, "host.js"), "utf8");
+  ok(/function readNamespaceDoc\(ns\)/.test(hostSource),
+    "★ 有 readNamespaceDoc 统一读取器（走 configEditor）");
+  ok(/configEditor\.configuration\(\)/.test(hostSource),
+    "★ 读别的命名空间走 configEditor.configuration()（官方同款路径）");
+  ok(hostSource.indexOf("settingsService.get(") === -1,
+    "★ 不再用 settings.get() 读别人的命名空间（0.2 无此方法）");
+  ok(/export const inject = \[[^\]]*"configEditor"/.test(hostSource),
+    "inject 声明含 configEditor");
+  ok(/readNamespaceDoc\("llm-pi-ai"\)/.test(hostSource),
+    "视觉路由经 readNamespaceDoc 读 llm-pi-ai");
+}
+
 // ---------- 输出 ----------
 console.log("通过：");
 for (const line of pass) console.log(`  ✓ ${line}`);

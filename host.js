@@ -35,7 +35,9 @@ export const name = "mimo-extension";
  * 强依赖：命令与工具注册表。
  * webServer 走 ctx.inject 软依赖，缺失时插件仍能加载（headless 组合）。
  */
-export const inject = ["commands", "tools", "settings"];
+// configEditor：0.2 读**别人的**命名空间（llm-pi-ai / agent-default-model）的唯一
+// 正路 —— settings.get(ns) 只认已注册 ns 且 0.2 的 SettingsForms 根本没有 get。
+export const inject = ["commands", "tools", "settings", "configEditor"];
 
 const DEFAULT_MIMO_API = "https://platform.xiaomimimo.com/api/v1";
 const REQUEST_TIMEOUT_MS = 15000;
@@ -1939,16 +1941,37 @@ export function apply(ctx, config) {
   // "是不是 MiMo"最可靠的证据 —— 名字会骗人（`xiaomi` 不含 mimo、
   // 自建网关可能叫 `mimo-xxx` 却指向别家）。
   let settingsService = null;
+  // 0.2 读**别人的**命名空间必须走 configEditor（官方 `ctx.get("configEditor")`）：
+  //   `settings.get(ns)` 在 0.2 的 SettingsForms 上**根本不存在**（只有
+  //   describe/schema/update/mutate/write/replace）→ 调用必抛 → 被 catch 吞掉 →
+  //   表现为「读不到 llm-pi-ai 命名空间」（视觉路由失败的真正原因）。
+  //   describe() 内部用的也是同一条路径：configEditor.configuration() 返回
+  //   [{entry, inherited, override}]，其中 inherited 是**组合后的继承值**。
+  let configEditor = null;
+  /**
+   * 读任意命名空间的**组合后配置**（不要求该 ns 由本插件注册）。
+   *
+   * @param {string} ns 配置条目的 id（如 "llm-pi-ai" / "agent-default-model"）。
+   * @returns {any} 该条目的 inherite 配置对象；条目不存在或服务不可用时 null。
+   */
+  function readNamespaceDoc(ns) {
+    if (!configEditor || typeof configEditor.configuration !== "function") return null;
+    try {
+      const rows = configEditor.configuration();
+      const row = Array.isArray(rows) ? rows.find((r) => r?.entry?.options?.id === ns) : null;
+      return row?.inherited ?? null;
+    } catch {
+      return null;
+    }
+  }
+  deps.readNamespaceDoc = readNamespaceDoc;
   deps.providerBaseURL = (provider) => {
     if (!provider) return "";
-    if (settingsService && typeof settingsService.get === "function") {
-      try {
-        const doc = settingsService.get("llm-pi-ai");
-        const url = doc?.providers?.[provider]?.baseURL;
-        if (typeof url === "string" && url) return url;
-      } catch {
-        /* 读不到就落到内置表 */
-      }
+    {
+      // 0.2：走 configEditor（settings.get 不存在）——读不到就落到内置表
+      const doc = readNamespaceDoc("llm-pi-ai");
+      const url = doc?.providers?.[provider]?.baseURL;
+      if (typeof url === "string" && url) return url;
     }
     return builtinBaseURL(provider);
   };
@@ -1967,16 +1990,13 @@ export function apply(ctx, config) {
    * @returns {{provider: string, model: string} | null}
    */
   const readDefaultModel = () => {
-    if (!settingsService || typeof settingsService.get !== "function") return null;
-    try {
-      const doc = settingsService.get("agent-default-model");
-      const provider = typeof doc?.provider === "string" ? doc.provider : "";
-      const model = typeof doc?.model === "string" ? doc.model : "";
-      if (!provider && !model) return null;
-      return { provider, model };
-    } catch {
-      return null;
-    }
+    // 0.2：走 configEditor（settings.get 不存在）
+    const doc = readNamespaceDoc("agent-default-model");
+    if (!doc) return null;
+    const provider = typeof doc.provider === "string" ? doc.provider : "";
+    const model = typeof doc.model === "string" ? doc.model : "";
+    if (!provider && !model) return null;
+    return { provider, model };
   };
   deps.readDefaultModel = readDefaultModel;
 
@@ -2120,13 +2140,13 @@ export function apply(ctx, config) {
     if (!settingsService || typeof settingsService.mutate !== "function") {
       return { changed, error: "设置服务不可写（settings.mutate 不可用）" };
     }
-    let doc;
-    try {
-      doc = settingsService.get("llm-pi-ai");
-    } catch {
-      return { changed, error: "读不到 llm-pi-ai 命名空间" };
+    // 0.2：走 configEditor 读组合后的 llm-pi-ai 配置（settings.get 在 0.2 不存在，
+    // 旧写法必然抛错 → 用户看到「视觉路由设置失败：读不到 llm-pi-ai 命名空间」）。
+    const doc = readNamespaceDoc("llm-pi-ai");
+    if (!doc) {
+      return { changed, error: "读不到 llm-pi-ai 命名空间（configEditor 不可用或条目缺失）" };
     }
-    const providers = doc?.providers ?? {};
+    const providers = doc.providers ?? {};
 
     // 目标与「该不该有 image」的判定 —— **统一 want 函数，单一事实来源**。
     // 三个开关各认领一块，按模型取并集；谁关了就重算，不会互相打架：
@@ -2315,10 +2335,18 @@ export function apply(ctx, config) {
   // 用户在「MiMo 用量」页填写的 Cookie / 套餐总量 / 胶囊位置等存这里，
   // 优先级高于 patch 层 config（config 作为组成基线）。
   let userSettings = null;
-  ctx.inject(["settings"], (settingsCtx) => {
+  // inject 回调**只传一个 ctx**（官方样例：`inject(["connection","webServer"], (webCtx) => …)`），
+  // 服务按属性名从该 ctx 上取 —— 不是按位置传第二个参数。
+  ctx.inject(["settings", "configEditor"], (settingsCtx) => {
     // 先抓住 settings 服务：除了注册本插件命名空间，还要用它读
     // `llm-pi-ai` 的 providers.<id>.baseURL（判定计费类型用）。
     settingsService = settingsCtx?.settings ?? null;
+    // 0.2 读别人的命名空间只能走 configEditor（见 readNamespaceDoc 的说明）
+    try {
+      configEditor = settingsCtx?.configEditor ?? null;
+    } catch {
+      configEditor = null;
+    }
 
     /**
      * 把旧命名空间（`dsh-mimo-extension`）的用户配置迁移到新命名空间
