@@ -2499,7 +2499,23 @@ export function apply(ctx, config) {
 
   /** 用户层设置合并后的 mimo 配置（用户层 > patch config）。 */
   const currentMimo = () => {
-    const fromUser = userSettings?.get?.() ?? {};
+    // 🔴 0.2 写读必须**同源**：POST 走 settingsService.update(SETTINGS_NS, …) 写进
+    //    loader profile config，所以读也必须读同一条目 —— 旧代码读
+    //    `userSettings?.get?.()`，而 0.2 已移除 settings.register（上面 register
+    //    调用返回 null）→ userSettings 恒 null → fromUser 恒 {} →
+    //    用户保存后**再读恢复原样**（本轮用户实测：提示已保存、重进还原）。
+    //    正路与读 llm-pi-ai 一致：configEditor.configuration() 的 inherited。
+    //    兜底顺序：configEditor → 旧 userSettings（0.1.x）→ patch config。
+    let fromUser = {};
+    const viaEditor = readNamespaceDoc(SETTINGS_NS);
+    if (viaEditor && typeof viaEditor === "object") fromUser = viaEditor;
+    else if (userSettings?.get) {
+      try {
+        fromUser = userSettings.get() ?? {};
+      } catch {
+        fromUser = {};
+      }
+    }
     const merged = mergeConfig(DEFAULT_CONFIG, config ?? {});
     const userMimo = fromUser.mimo ?? {};
     const out = mergeConfig(merged, { mimo: userMimo });

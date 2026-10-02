@@ -1256,6 +1256,38 @@ if (loaded) {
     "视觉路由经 readNamespaceDoc 读 llm-pi-ai");
 }
 
+// ---------- 写读同源：currentMimo 必须读 loader config（0.2 register 已移除） ----------
+// 症状（用户实测 10-03）：设置页提示「已保存」，重进设置页**恢复原样**。
+// 根因：写走 settingsService.update(SETTINGS_NS, …) 落 loader profile config，
+// 而读走 `userSettings?.get?.()` —— 0.2 已移除 settings.register（register 调用
+// 返回 null → userSettings 恒 null）→ 读回的永远是 {} → 用户看到默认值。
+// 修法：与读 llm-pi-ai 一致，走 configEditor.configuration() 的 inherited。
+{
+  const hostSource = readFileSync(join(here, "host.js"), "utf8");
+  ok(/const viaEditor = readNamespaceDoc\(SETTINGS_NS\)/.test(hostSource),
+    "★ currentMimo 经 readNamespaceDoc(SETTINGS_NS) 读用户层（写读同源）");
+  // 禁止把裸的 userSettings 读取当**主路径**（只允许作 0.1.x 兜底，且必须在 else 分支）
+  {
+    const idx = hostSource.indexOf("const currentMimo = () =>");
+    const rawSeg = hostSource.slice(idx, idx + 2000);
+    // ⚠ 必须先剥注释：本函数的注释里**写了旧代码的写法**（说明根因），
+    //   直接 indexOf 会命中注释，把干净代码测红（我第一版就这样踩了）。
+    const seg = rawSeg
+      .split("\n")
+      .map((line) => {
+        const at = line.indexOf("//");
+        return at === -1 ? line : line.slice(0, at);
+      })
+      .join("\n");
+    const bareRead = seg.indexOf("userSettings?.get?.(");
+    const editorRead = seg.indexOf("readNamespaceDoc(SETTINGS_NS)");
+    ok(editorRead !== -1 && (bareRead === -1 || editorRead < bareRead),
+      "★ loader 读取优先于 userSettings 兜底（不得再以 userSettings 为主路径）");
+  }
+  ok(/mergeConfig\(merged, \{ mimo: userMimo \}\)/.test(hostSource),
+    "用户层仍覆盖 patch 层（合并语义未变）");
+}
+
 // ---------- Cookie 凭据库：安全性断言（不泄露 / 用户确认 / 只写官方） ----------
 // 需求：可选「登录后自动获取并更新 Cookie」，且**尽可能避免泄露与安全风险**。
 // 结论（已写入 README/AGENTS）：小米只提供网页 SSO，插件**无法**在不接触用户
