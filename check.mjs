@@ -512,7 +512,10 @@ if (loaded) {
         v && typeof v === "object" && typeof v.get === "function" && Object.keys(v).every((k) => k === "get")
           ? v.get()
           : v;
-      ok(value?.mimo?.planTotalTokens === 500000000, `脏输入回落默认值（planTotalTokens=${value?.mimo?.planTotalTokens}）`);
+      // 10-02：planTotalTokens 也标了 volatile（平台要求 GUI 可写字段全 volatile）
+      // → 解析出来是引用对象，必须按契约解引用后比标量。
+      ok(deref(value?.mimo?.planTotalTokens) === 500000000,
+        `脏输入回落默认值（planTotalTokens=${deref(value?.mimo?.planTotalTokens)}）`);
       const pos = deref(value?.mimo?.pillPosition);
       ok(pos === "header", `非法 pillPosition 回落 header（实为 ${JSON.stringify(pos)}）`);
       // 合法值必须**原样透传**（volatile 包装不得吞掉用户配置）
@@ -520,6 +523,34 @@ if (loaded) {
       ok(deref(good?.mimo?.pillPosition) === "toolbar", "合法 pillPosition 经 volatile 透传（toolbar）");
       ok(deref(good?.mimo?.wrapToolbar) === false, "合法 wrapToolbar 经 volatile 透传（false）");
       ok(deref(good?.mimo?.hideViewWhenNotMiMo) === true, "合法 hideViewWhenNotMiMo 经 volatile 透传（true）");
+
+      // ★ 所有 GUI 可写字段必须标 volatile —— 平台硬契约（dsh-settings:501-525）：
+      //   SettingsForms.write() 内部 validatePaths(next, form) 对合并结果的每个键做
+      //   isVolatilePath 校验，非 volatile 直接抛
+      //   `Config field "mimo.<x>" is not volatile` → 用户点保存看到"保存失败"。
+      //   10-02 真实事故：planTotalTokens 未标 → 保存报错。此断言按平台判据
+      //   （schema.meta.volatile）逐字段核对 POST 会写的全部字段。
+      {
+        const WRITABLE = [
+          "cookie", "planTotalTokens", "pillPosition", "wrapToolbar",
+          "hideViewWhenNotMiMo", "visionRouting", "visionRoutingTextModels", "visionRoutingAllMimo",
+        ];
+        const json = schema.toJSON();
+        const refs = json?.refs ?? {};
+        const volatileCount = Object.values(refs).filter((n) => n?.meta?.volatile === true).length;
+        ok(volatileCount >= WRITABLE.length,
+          `★ schema 的 volatile 字段数 ≥ 可写字段数（${volatileCount} ≥ ${WRITABLE.length}，平台要求 GUI 可写字段全 volatile）`);
+        // 行为级：POST 会写的每个字段都必须能被"volatile 表单"接受 ——
+        // 用平台同款判据 isVolatilePath 的等价检查（schema 解析出的引用对象即 volatile 证据）。
+        const probe = schema({ mimo: Object.fromEntries(WRITABLE.map((k) => [k, undefined])) });
+        const missing = WRITABLE.filter((k) => {
+          const v = probe?.mimo?.[k];
+          // volatile 字段解析为引用对象（有 get）；非 volatile 是裸标量
+          return !(v && typeof v === "object" && typeof v.get === "function");
+        });
+        ok(missing.length === 0,
+          `★ 可写字段全部按 volatile 契约解析（缺: ${missing.join(", ") || "无"})`);
+      }
 
       // 3) 走**真实的** dsh-settings.describe() —— 这正是当年抛错的代码路径。
       //    直接用它导出的 SettingsProvider.prototype，跳过整个 Cordis 装配。
@@ -1001,7 +1032,10 @@ if (loaded) {
     ok(syncIdx > 0 && regIdx2 > 0 && syncIdx > regIdx2,
       "★ 启动同步在 register **之后**（否则读到 patch 层，开关全部失效）");
     ok(/visionRouting: bool\(mimo\.visionRouting, false\)/.test(src), "normalize 支持 visionRouting");
-    ok(/visionRouting: factory\.boolean\(\)\.default\(false\)/.test(src), "schema 支持 visionRouting（默认关）");
+    // 10-02：数值/布尔字段改标 volatile（vol(...) 包裹）以满足平台写入契约，
+    // 断言要容忍 vol() 包裹形态。
+    ok(/visionRouting: vol\(factory\.boolean\(\)\.default\(false\)\)/.test(src),
+      "schema 支持 visionRouting（默认关 + volatile 可写）");
     ok(/visionChanged: vision\.changed/.test(src) && /visionError: vision\.error/.test(src),
       "POST /settings 回传结果（失败要能看见）");
     // 为纯文本模型提供视觉能力（子开关）
@@ -1049,8 +1083,8 @@ if (loaded) {
       "★ 全量开关：MiMo 渠道上的全部模型");
     ok(/visionRoutingTextModels: bool\(mimo\.visionRoutingTextModels, false\)/.test(src),
       "normalize 支持 visionRoutingTextModels");
-    ok(/visionRoutingTextModels: factory\.boolean\(\)\.default\(false\)/.test(src),
-      "schema 支持 visionRoutingTextModels（默认关）");
+    ok(/visionRoutingTextModels: vol\(factory\.boolean\(\)\.default\(false\)\)/.test(src),
+      "schema 支持 visionRoutingTextModels（默认关 + volatile 可写）");
     ok(/const allowTextOnly = want && mimo\.visionRoutingTextModels === true;/.test(src),
       "★ 子开关只在主开关也开时生效");
   }

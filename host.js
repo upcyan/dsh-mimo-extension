@@ -363,16 +363,22 @@ export function buildMimoSettingsSchema(ctx) {
 
   const inner = factory.object({
     mimo: factory.object({
+      // 🔴 凡 GUI 可写字段都必须 .volatile()（平台契约，dsh-settings:501-525）：
+      //    SettingsForms.write() 内部 `validatePaths(next, form)` 对合并结果的**每个键**
+      //    校验 `isVolatilePath`，非 volatile 直接抛
+      //    `Config field "mimo.<x>" is not volatile` —— 用户点保存就报"保存失败"。
+      //    （update()/mutate() 都最终走 write()，所以没有旁路。）
+      //    10-02 实测：planTotalTokens 等未标 → 保存报错，补齐后恢复。
       // 控制台 Cookie 是凭据：标 secret 后 describe() 会剥掉它并回传写入槽位
-      cookie: factory.string().default("").role("secret"),
+      cookie: vol(factory.string().default("").role("secret")),
       cookieRef: factory.string().default("MIMO_CONSOLE_COOKIE"),
-      planTotalTokens: factory.number().default(500_000_000),
+      planTotalTokens: vol(factory.number().default(500_000_000)),
       pillPosition: vol(factory.string().default("header")),
       wrapToolbar: vol(factory.boolean().default(true)),
       hideViewWhenNotMiMo: vol(factory.boolean().default(false)),
-      visionRouting: factory.boolean().default(false),
-      visionRoutingTextModels: factory.boolean().default(false),
-      visionRoutingAllMimo: factory.boolean().default(false),
+      visionRouting: vol(factory.boolean().default(false)),
+      visionRoutingTextModels: vol(factory.boolean().default(false)),
+      visionRoutingAllMimo: vol(factory.boolean().default(false)),
       // 动态键（provider 或 provider/model），结构由 mimoSettingsSchema 兜底。
       // 注意 schemastery 的 dict 签名是 dict(值, 键) —— 第一个参数是 inner(值)。
       billingTypeOverrides: factory.dict(factory.any(), factory.string()).default({}),
