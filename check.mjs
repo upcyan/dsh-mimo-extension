@@ -1256,6 +1256,58 @@ if (loaded) {
     "视觉路由经 readNamespaceDoc 读 llm-pi-ai");
 }
 
+// ---------- Cookie 凭据库：安全性断言（不泄露 / 用户确认 / 只写官方） ----------
+// 需求：可选「登录后自动获取并更新 Cookie」，且**尽可能避免泄露与安全风险**。
+// 结论（已写入 README/AGENTS）：小米只提供网页 SSO，插件**无法**在不接触用户
+// 账号密码的前提下换取凭据；因此实现的是「引导 + 校验 + 安全落库 + 风险确认」，
+// 以下断言保证这条链路不引入新的泄露面。
+{
+  const hostSource = readFileSync(join(here, "host.js"), "utf8");
+  const clientSource = readFileSync(join(here, "client.js"), "utf8");
+
+  // ① 有 save-cookie 路由，且只写凭据库
+  ok(/ROUTE_PREFIX \+ "\/save-cookie"/.test(hostSource), "★ 有 /save-cookie 路由（写凭据库）");
+  ok(/credentials\.set\(ref, candidate\)/.test(hostSource), "★ 走 credentials.set 写凭据库");
+  ok(/credentials\.unset\(ref\)/.test(hostSource), "支持撤销（credentials.unset）");
+
+  // ② 写库前必须校验（无效不写）
+  {
+    const saveIdx = hostSource.indexOf('ROUTE_PREFIX + "/save-cookie"');
+    const seg = hostSource.slice(saveIdx, saveIdx + 3000);
+    ok(/const valid = okB \|\| okD \|\| okU;/.test(seg), "写库前先校验（官方三连任一通）");
+    ok(/if \(!valid\) \{/.test(seg) && seg.indexOf("if (!valid)") < seg.indexOf("credentials.set("),
+      "★ 校验失败直接返回，不写库");
+  }
+
+  // ③ **绝不回显凭据**：save-cookie 的响应体只含 ref/saved/valid，不含 cookie 原值
+  {
+    const saveIdx = hostSource.indexOf('ROUTE_PREFIX + "/save-cookie"');
+    const seg = hostSource.slice(saveIdx, saveIdx + 3000);
+    const responses = seg.match(/writeJson\(res, \d+, \{[^}]*\}/g) ?? [];
+    ok(responses.length > 0, "save-cookie 有明确响应体");
+    ok(!/cookie:\s*(candidate|body)/.test(seg), "★ 响应/日志不回显 Cookie 原值");
+    ok(!/console\.(log|info|warn|error)\([^)]*candidate/.test(seg), "★ 不把候选 Cookie 打进日志");
+  }
+
+  // ④ 客户端：用户确认制 + 不把凭据写进 settings 明文
+  ok(/setVaultConfirm\(true\)/.test(clientSource), "★ 点按钮先弹风险确认（用户确认制）");
+  ok(/data-role": "cookie-risk-confirm"/.test(clientSource), "有风险确认块（可被测试锚定）");
+  ok(/cfg\.cookieRiskBody/.test(clientSource), "风险说明文案已渲染（不是只写不显示）");
+  {
+    // save-cookie 走独立 rpc，不混进 settings 的 payload（后者会落 settings.yaml 明文）
+    const vaultCall = /rpc\("save-cookie", \{ cookie: candidate \}, "POST"\)/.test(clientSource);
+    ok(vaultCall, "★ 凭据经 /save-cookie 独立通道（不落 settings 明文）");
+  }
+  // ⑤ 风险说明必须包含关键告知项（等同/泄密后果/存储位置/撤销方式）
+  const riskBody = (hostSource.match(/cfg\.cookieRiskBody/) ? null : null) ?? null;
+  const zhRisk = /"cfg\.cookieRiskBody": "([^"]+)"/.exec(clientSource)?.[1] ?? "";
+  ok(/账号访问权/.test(zhRisk), "风险说明点明「等同账号访问权」");
+  ok(/本机/.test(zhRisk) && /platform\.xiaomimimo\.com/.test(zhRisk), "风险说明点明存储位置与发送目标");
+  ok(/清除/.test(zhRisk), "风险说明给出撤销方式");
+  ok(/vaultAvailable/.test(hostSource) && /vaultAvailable/.test(clientSource),
+    "凭据库不可用时界面有明确降级（不假装保存成功）");
+}
+
 // ---------- 输出 ----------
 console.log("通过：");
 for (const line of pass) console.log(`  ✓ ${line}`);

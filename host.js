@@ -2585,6 +2585,23 @@ export function apply(ctx, config) {
                       // Cookie 不回传明文，只回传是否已配置与来源，避免泄漏到浏览器
                       cookieConfigured: Boolean(resolved.cookie),
                       cookieSource: resolved.source,
+                      // 凭据库是否可用（前端据此决定「安全保存到凭据库」按钮是否可用）
+                      vaultAvailable: (() => {
+                        try {
+                          const c = ctx.get?.("credentials");
+                          return Boolean(c && typeof c.set === "function");
+                        } catch {
+                          return false;
+                        }
+                      })(),
+                      // 凭据引用名（前端展示用；**不是** Cookie 本身）
+                      cookieRef: (() => {
+                        try {
+                          return (typeof mimo.cookieRef === "string" && mimo.cookieRef.trim()) || "MIMO_CONSOLE_COOKIE";
+                        } catch {
+                          return "MIMO_CONSOLE_COOKIE";
+                        }
+                      })(),
                       planTotalTokens: m.planTotalTokens ?? 0,
                       // ⚠ 同 result.ui：必须先 deref 再白名单，否则回传 `{}`。
                       pillPosition: pickVolatile(m.pillPosition, PILL_POSITIONS, "header"),
@@ -2670,6 +2687,79 @@ export function apply(ctx, config) {
               // 这里拿候选 Cookie 真打一次官方接口，把结论明确回给界面。
               // ⚠ 只校验**请求里带来的候选值**，不读已存的（那是另一件事）；
               //    也不落盘 —— 校验通过与否由用户决定要不要保存。
+              // 把校验通过的 Cookie 写进 **DSH 凭据库**（.credentials.yaml，mode 0600），
+              // 而不是明文 settings.yaml —— 这是"尽可能避免泄露"的核心一步。
+              //
+              // 安全边界（逐条对应风险说明）：
+              //   ① 先校验再写：拿候选值真打官方接口，无效直接拒（避免把错值/他人值存下）
+              //   ② 只写凭据库：settings 里只留 cookieRef 引用名，**明文不落 settings.yaml**
+              //   ③ 不回显：响应体永远只回 {ok, source} —— 绝不回传 Cookie 本身
+              //   ④ 仅官方域名：校验只打 DEFAULT_MIMO_API（见 fetchJson 的调用点）
+              //   ⑤ 可撤销：unset=true 时用 credentials.unset 删除（用户随时可清除）
+              if (url.pathname === ROUTE_PREFIX + "/save-cookie") {
+                if (req.method !== "POST") {
+                  writeJson(res, 405, { ok: false, error: "只接受 POST" });
+                  return;
+                }
+                const body = await readJsonBody(req);
+                const ref = (typeof body?.ref === "string" && body.ref.trim()) || "MIMO_CONSOLE_COOKIE";
+                const credentials = ctx.get?.("credentials");
+                if (!credentials || typeof credentials.set !== "function") {
+                  writeJson(res, 503, {
+                    ok: false,
+                    error: "凭据服务不可用（本部署未挂载 credentials provider）——请改用设置里的 Cookie 输入框",
+                  });
+                  return;
+                }
+                // 撤销路径
+                if (body?.unset === true) {
+                  try {
+                    if (typeof credentials.unset === "function") await credentials.unset(ref);
+                    writeJson(res, 200, { ok: true, data: { unset: true, ref } });
+                  } catch (error) {
+                    writeJson(res, 500, { ok: false, error: String(error?.message ?? error).slice(0, 200) });
+                  }
+                  return;
+                }
+                const candidate = typeof body?.cookie === "string" ? body.cookie.trim() : "";
+                if (!candidate) {
+                  writeJson(res, 400, { ok: false, error: "缺少 cookie 字段" });
+                  return;
+                }
+                // ① 先校验（复用官方三连同一判据；失败则不写库）
+                const base = (process.env.MIMO_API_URL || DEFAULT_MIMO_API).replace(/\/+$/, "");
+                const [okB, rawB] = await fetchJson(`${base}/balance`, candidate);
+                const [okD, rawD] = await fetchJson(`${base}/tokenPlan/detail`, candidate);
+                const [okU, rawU] = await fetchJson(`${base}/tokenPlan/usage`, candidate);
+                const valid = okB || okD || okU;
+                if (!valid) {
+                  writeJson(res, 200, {
+                    ok: true,
+                    data: { saved: false, valid: false, error: msgOf(rawB || rawD || rawU).slice(0, 200) },
+                  });
+                  return;
+                }
+                // ② 写凭据库（空值会被 provider 拒绝，所以只在 valid 时写）
+                try {
+                  await credentials.set(ref, candidate);
+                } catch (error) {
+                  writeJson(res, 500, {
+                    ok: false,
+                    error: `凭据库写入失败：${String(error?.message ?? error).slice(0, 160)}`,
+                  });
+                  return;
+                }
+                // ③ 立刻清官方缓存，让新 Cookie 马上生效（复用既有 clearOfficialCache）
+                try {
+                  deps.clearOfficialCache?.();
+                } catch {
+                  /* 缓存清理失败不影响保存结果 */
+                }
+                // ④ **绝不回显 Cookie** —— 只回引用名与来源标记
+                writeJson(res, 200, { ok: true, data: { saved: true, valid: true, ref } });
+                return;
+              }
+
               if (url.pathname === ROUTE_PREFIX + "/validate-cookie") {
                 if (req.method !== "POST") {
                   writeJson(res, 405, { ok: false, error: "只接受 POST" });

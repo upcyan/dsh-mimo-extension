@@ -329,6 +329,18 @@
       "cfg.title": "MiMo 额度配置",
       "cfg.hint": "Cookie 用于读取小米官方套餐剩余；留空则用本地估算。Cookie 只保存在本机 settings.yaml，不会回传到浏览器。",
       "cfg.cookie": "MiMo 控制台 Cookie",
+      "cfg.cookieVault": "安全保存到凭据库",
+      "cfg.cookieVaultHint": "写入 DSH 凭据库（.credentials.yaml，权限 0600），明文不进 settings.yaml",
+      "cfg.cookieVaultSaved": "已安全保存到凭据库（引用名 {ref}）",
+      "cfg.cookieVaultFailed": "凭据库保存失败：{error}",
+      "cfg.cookieVaultUnavailable": "本部署未挂载凭据服务，请改用上面的输入框保存",
+      "cfg.cookieInvalid": "Cookie 校验未通过，未保存：{error}",
+      "cfg.cookieOpenConsole": "打开官方控制台",
+      "cfg.cookieRiskTitle": "安全提示：请先阅读",
+      "cfg.cookieRiskBody": "• 这个 Cookie 等同于你的小米账号访问权（可读 MiMo 账单与套餐），请勿分享。\n• 只保存在本机，且只发往 platform.xiaomimimo.com。\n• 优先存进凭据库（权限 0600）；不勾选时才会落到 settings.yaml 明文。\n• 小米改密码/退出登录会使其失效，届时重新获取即可。\n• 随时可在本页用「清除已保存的 Cookie」撤销。",
+      "cfg.cookieRiskConfirm": "我已了解风险，继续保存",
+      "cfg.cookieRiskCancel": "取消",
+      "cfg.cookieRiskShow": "为什么需要它 · 风险说明",
       "cfg.cookiePlaceholder": "api-platform_serviceToken=...; userId=...",
       "cfg.cookieConfigured": "已配置（{source}）",
       "cfg.cookieEmpty": "未配置",
@@ -499,6 +511,18 @@
       "cfg.title": "MiMo quota settings",
       "cfg.hint": "The cookie reads your Xiaomi official plan quota; leave it empty to use the local estimate. It is stored only in this machine's settings.yaml and is never sent back to the browser.",
       "cfg.cookie": "MiMo console cookie",
+      "cfg.cookieVault": "Save to credential vault",
+      "cfg.cookieVaultHint": "Stores it in the DSH credential vault (.credentials.yaml, mode 0600) instead of plaintext settings.yaml",
+      "cfg.cookieVaultSaved": "Saved to the credential vault (ref {ref})",
+      "cfg.cookieVaultFailed": "Credential vault save failed: {error}",
+      "cfg.cookieVaultUnavailable": "This deployment mounts no credential provider; use the input above instead",
+      "cfg.cookieInvalid": "Cookie validation failed, not saved: {error}",
+      "cfg.cookieOpenConsole": "Open official console",
+      "cfg.cookieRiskTitle": "Security notice — please read",
+      "cfg.cookieRiskBody": "• This cookie grants access to your Xiaomi account (MiMo billing and plan data); never share it.\n• It is stored on this machine only and sent solely to platform.xiaomimimo.com.\n• Prefer the credential vault (mode 0600); only if you skip it does the value land in plaintext settings.yaml.\n• Changing your Xiaomi password or signing out invalidates it; just fetch it again.\n• You can revoke it anytime with Clear saved cookie on this page.",
+      "cfg.cookieRiskConfirm": "I understand the risk, save it",
+      "cfg.cookieRiskCancel": "Cancel",
+      "cfg.cookieRiskShow": "Why it is needed · risks",
       "cfg.cookiePlaceholder": "api-platform_serviceToken=...; userId=...",
       "cfg.cookieConfigured": "Configured ({source})",
       "cfg.cookieEmpty": "Not configured",
@@ -2959,6 +2983,9 @@
       // 所以这里能做的是「把手工步骤讲清楚 + 存之前先验一遍」，
       // 而不是假装能一键登录。
       const [guideOpen, setGuideOpen] = useState(false);
+      // 风险确认弹窗（用户要求"交由用户确认"）：true 才显示确认块，
+      // 点「我已了解风险」后才真正调 /save-cookie。
+      const [vaultConfirm, setVaultConfirm] = useState(false);
       // {kind:'ok'|'err'|'busy', text, detail?} —— 校验结果
       const [verify, setVerify] = useState(null);
       const [planTotal, setPlanTotal] = useState("");
@@ -3087,6 +3114,50 @@
           setBusy(false);
         }
       }, [cookie, clearCookie, planTotal, position, wrapToolbar, hideViewWhenNotMiMo, visionRouting, visionTextModels, visionAllMimo, onChange]);
+
+      /**
+       * 把当前输入的 Cookie **安全保存到 DSH 凭据库**（.credentials.yaml，0600）。
+       *
+       * 链路：POST /save-cookie → host 先真打官方接口校验 → 通过才写凭据库
+       *       → 清官方缓存 → 响应**只回引用名，绝不回显 Cookie**。
+       *
+       * 安全要点：
+       *   · 明文不进 settings.yaml（settings 里只有 cookieRef 引用名）
+       *   · 只在通过官方接口校验后才落库（写入拒绝空值，见 credentials provider）
+       *   · 输入框立刻清空（不把凭据留在内存/界面上）
+       */
+      const saveToVault = useCallback(async () => {
+        const candidate = cookie.trim();
+        if (!candidate) {
+          setVerify({ kind: "err", text: t("cfg.verifyEmpty") });
+          return;
+        }
+        setBusy(true);
+        setVerify({ kind: "busy", text: t("cfg.verifying") });
+        try {
+          const r = await rpc("save-cookie", { cookie: candidate }, "POST");
+          if (r?.saved && r?.valid) {
+            setVerify({ kind: "ok", text: t("cfg.cookieVaultSaved", { ref: r.ref ?? "" }) });
+            // 凭据已进库：清空输入框，界面不再持有明文
+            setCookie("");
+            setClearCookie(false);
+            const fresh = await rpc("settings").catch(() => null);
+            if (fresh) setCfg(fresh);
+            if (typeof onChange === "function") onChange();
+          } else if (r && r.valid === false) {
+            setVerify({ kind: "err", text: t("cfg.cookieInvalid", { error: shortError(r.error) }) });
+          } else {
+            setVerify({ kind: "err", text: t("cfg.cookieInvalid", { error: shortError(r?.error) }) });
+          }
+        } catch (e) {
+          setVerify({
+            kind: "err",
+            text: t("cfg.cookieVaultFailed", { error: shortError(e instanceof Error ? e.message : String(e)) }),
+          });
+        } finally {
+          setBusy(false);
+        }
+      }, [cookie, onChange]);
 
       const labelStyle = {
         display: "block",
@@ -3329,6 +3400,25 @@
                       { style: { marginTop: "6px", opacity: 0.85 } },
                       t("cfg.guideWhyManual"),
                     ),
+                    // 风险说明（用户要求"做好风险说明，交由用户确认"）——
+                    // 与引导同区展示，措辞与「保存到凭据库」的确认弹窗一致。
+                    h(
+                      "div",
+                      {
+                        style: {
+                          marginTop: "8px",
+                          paddingTop: "8px",
+                          borderTop: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.08))",
+                        },
+                        "data-role": "cookie-risk",
+                      },
+                      h("div", { style: { fontWeight: 600, marginBottom: "4px" } }, t("cfg.cookieRiskTitle")),
+                      h(
+                        "div",
+                        { style: { whiteSpace: "pre-line" } },
+                        t("cfg.cookieRiskBody"),
+                      ),
+                    ),
                     h(
                       "a",
                       {
@@ -3344,6 +3434,115 @@
                         },
                       },
                       t("cfg.guideOpenConsole"),
+                    ),
+                  )
+                : null,
+              // 「安全保存到凭据库」：把当前输入的 Cookie 先校验、再写进 DSH 凭据库
+              // （.credentials.yaml，0600），**明文不进 settings.yaml**。
+              // 必须经用户确认（风险弹窗）后才发请求 —— 见 vaultConfirm 状态。
+              h(
+                "div",
+                { style: { display: "flex", gap: "8px", alignItems: "center", marginTop: "6px", flexWrap: "wrap" } },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    disabled: busy || !cookie.trim() || cfg?.vaultAvailable === false,
+                    title:
+                      cfg?.vaultAvailable === false
+                        ? t("cfg.cookieVaultUnavailable")
+                        : t("cfg.cookieVaultHint"),
+                    onClick: () => {
+                      if (!cookie.trim()) {
+                        setVerify({ kind: "err", text: t("cfg.verifyEmpty") });
+                        return;
+                      }
+                      // 用户确认制：先弹风险确认，确认后才真正写库
+                      setVaultConfirm(true);
+                    },
+                    style: {
+                      padding: "5px 12px",
+                      fontSize: "12px",
+                      borderRadius: "8px",
+                      border: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16))",
+                      background: "var(--dsw-alias-bg-layer-1, #fff)",
+                      color: "inherit",
+                      cursor: "pointer",
+                    },
+                    "data-role": "cookie-vault-save",
+                  },
+                  t("cfg.cookieVault"),
+                ),
+                h(
+                  "span",
+                  { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
+                  cfg?.vaultAvailable === false ? t("cfg.cookieVaultUnavailable") : t("cfg.cookieVaultHint"),
+                ),
+                cfg?.cookieSource ? h(
+                  "span",
+                  { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
+                  t("cfg.cookieConfigured", { source: cfg.cookieSource }),
+                ) : null,
+              ),
+              vaultConfirm
+                ? h(
+                    "div",
+                    {
+                      style: {
+                        marginTop: "8px",
+                        padding: "10px 12px",
+                        borderRadius: "8px",
+                        border: "1px solid var(--dsw-alias-state-warning-border, rgba(200,120,0,.35))",
+                        background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,.06))",
+                        fontSize: "11px",
+                        lineHeight: 1.7,
+                      },
+                      "data-role": "cookie-risk-confirm",
+                    },
+                    h("div", { style: { fontWeight: 600, marginBottom: "4px" } }, t("cfg.cookieRiskTitle")),
+                    h("div", { style: { whiteSpace: "pre-line" } }, t("cfg.cookieRiskBody")),
+                    h(
+                      "div",
+                      { style: { display: "flex", gap: "8px", marginTop: "8px" } },
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          disabled: busy,
+                          onClick: async () => {
+                            setVaultConfirm(false);
+                            await saveToVault();
+                          },
+                          style: {
+                            padding: "5px 12px",
+                            fontSize: "12px",
+                            borderRadius: "8px",
+                            border: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16))",
+                            background: "var(--dsw-alias-state-business-primary, #0969da)",
+                            color: "#fff",
+                            cursor: "pointer",
+                          },
+                          "data-role": "cookie-vault-confirm",
+                        },
+                        t("cfg.cookieRiskConfirm"),
+                      ),
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => setVaultConfirm(false),
+                          style: {
+                            padding: "5px 12px",
+                            fontSize: "12px",
+                            borderRadius: "8px",
+                            border: "1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16))",
+                            background: "var(--dsw-alias-bg-layer-1, #fff)",
+                            color: "inherit",
+                            cursor: "pointer",
+                          },
+                        },
+                        t("cfg.cookieRiskCancel"),
+                      ),
                     ),
                   )
                 : null,
