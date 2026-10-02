@@ -1266,6 +1266,25 @@ if (loaded) {
   const hostSource = readFileSync(join(here, "host.js"), "utf8");
   ok(/const viaEditor = readNamespaceDoc\(SETTINGS_NS\)/.test(hostSource),
     "★ currentMimo 经 readNamespaceDoc(SETTINGS_NS) 读用户层（写读同源）");
+  // 🔴 读的必须是**生效值** entry.options.config，不是 inherited：
+  //   configuration() 的 inherited = patch 去掉 config 后的**下层值**（≈ 插件默认值），
+  //   而写入路径 edit() 用 entry.options.config。读 inherited 会表现为
+  //   「刚保存就又恢复原样」（10-03 实测：写盘 4.4e9 成功、GET 读回 500M）。
+  {
+    const fnStart = hostSource.indexOf("function readNamespaceDoc(ns)");
+    const fnSeg = hostSource
+      .slice(fnStart, fnStart + 1600)
+      .split("\n")
+      .map((line) => {
+        const at = line.indexOf("//");
+        return at === -1 ? line : line.slice(0, at);
+      })
+      .join("\n");
+    ok(/row\.entry\?\.options\?\.config/.test(fnSeg),
+      "★ readNamespaceDoc 读 entry.options.config（生效值，与写入路径 edit() 同源）");
+    ok(!/return row\?\.inherited/.test(fnSeg),
+      "★ 不把 inherited 当生效值返回（它是去掉 patch config 的下层值）");
+  }
   // 禁止把裸的 userSettings 读取当**主路径**（只允许作 0.1.x 兜底，且必须在 else 分支）
   {
     const idx = hostSource.indexOf("const currentMimo = () =>");

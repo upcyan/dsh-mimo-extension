@@ -1959,7 +1959,22 @@ export function apply(ctx, config) {
     try {
       const rows = configEditor.configuration();
       const row = Array.isArray(rows) ? rows.find((r) => r?.entry?.options?.id === ns) : null;
-      return row?.inherited ?? null;
+      if (!row) return null;
+      // 🔴 必须读 **entry.options.config**（当前生效的 patch 层配置），
+      //    不能读 `row.inherited`！
+      //    configuration() 的语义（dsh-config-editor:39-53）：
+      //      inherited = patch **去掉 config 之后**的下层组合值（≈ 插件包默认值）
+      //      override  = patch 里显式写的 config
+      //    而写入路径 edit() 是 `current = entry.options.config`
+      //    （官方 describe() 读的也是 entry.fiber.config）。
+      //    用 inherited 会读到"下层默认值"，表现为**刚保存就又变回原样**
+      //    （10-03 实测：POST 写盘 4.4e9 成功，GET 读回 500M）。
+      const live = row.entry?.options?.config;
+      if (live && typeof live === "object") return live;
+      // 兜底：运行中 fiber 的已解析配置（官方 describe 同源）
+      const viaFiber = row.entry?.fiber?.config;
+      if (viaFiber && typeof viaFiber === "object") return viaFiber;
+      return row.override ?? null;
     } catch {
       return null;
     }
