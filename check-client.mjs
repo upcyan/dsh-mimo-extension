@@ -450,8 +450,37 @@ for (const scene of SCENARIOS) {
       const viewSeg = src.slice(src.indexOf("function MimoUsageView("), src.indexOf("function MimoSettingsForm("));
       ok(!/h\(MimoSettingsForm/.test(viewSeg),
         "★ 详情页不再内嵌配置表单（0.2 已迁到插件页）");
-      ok(/inject\("plugins\.row\.config"/.test(src) && /dsh-mimo-extension#mimo-extension/.test(src),
-        "★ 配置表单注册进插件页 plugins.row.config（键 = 组合包#行 id）");
+      // ★ 键必须逐字等于平台自己拼的 `\${pkg.name}#\${rowId}\`（ui-plugin-manager 的
+      //   rowConfigKey），否则 configure.has(row) 恒 false → 行配置页**没有入口**
+      //   （PC/移动端同一个 RowsSection，不存在单端渲染差异）。
+      //   这里**从真实文件推导**期望值，不写死 —— 10-01 行 id 从短名改全名时，
+      //   写死的旧断言（#mimo-extension）会静默把错键固化。
+      {
+        // 反向验证脚本会把 check-client.mjs 复制到临时目录单独跑（只带 client.js），
+        // 那时 package.json / cordis.patch.yml 不在 → 读不到期望键。此时**降级**为
+        // "按当前注册的键静态比对"（不比推导值），不阻断 —— 否则 verify-* 全炸。
+        let expectedKey = null;
+        try {
+          const pkgName = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).name;
+          const patchSrc = readFileSync(new URL("./cordis.patch.yml", import.meta.url), "utf8");
+          const rowId = (/^\s*-\s*id:\s*(\S+)\s*$/m.exec(patchSrc) || [])[1];
+          if (pkgName && rowId) expectedKey = pkgName + "#" + rowId;
+        } catch {
+          /* 临时目录（反向验证）没有这两个文件 —— 降级比对 */
+        }
+        const registeredKey = (/key:\s*"([^"]+#[^"]+)"/.exec(src) || [])[1] ?? null;
+        if (expectedKey) {
+          ok(
+            new RegExp('inject\\("plugins\\.row\\.config"').test(src) && registeredKey === expectedKey,
+            `★ 配置表单注册进插件页 plugins.row.config（键 = 组合包#行 id = ${expectedKey}，实注册 ${registeredKey}）`,
+          );
+        } else {
+          ok(
+            new RegExp('inject\\("plugins\\.row\\.config"').test(src) && registeredKey !== null,
+            `★ 配置表单注册进插件页 plugins.row.config（键 = ${registeredKey}；无 package.json 可推导，降级比对）`,
+          );
+        }
+      }
       ok(/exports\.inject = \[[^\]]*"layout"/.test(src),
         "inject 声明含 layout（读 ctx.layout 必须声明，否则 Proxy 抛）");
       ok(/selectPanel\??\.?\("plugins"\)/.test(src),

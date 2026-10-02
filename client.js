@@ -265,7 +265,7 @@
       "view.title": "MiMo 用量与额度",
       "view.refresh": "刷新",
       "view.openSettings": "插件设置",
-      "view.openSettingsHint": "打开插件页并编辑本插件的配置（Cookie / 胶囊位置 / 视觉路由等）",
+      "view.openSettingsHint": "打开插件页，在本插件的行上点「配置」即可编辑（Cookie / 胶囊位置 / 视觉路由等）——官方导航最深只到插件页，行配置页需在页内点开",
       "view.loading": "加载中…",
       "view.official": "数据来源：小米 MiMo 官方接口",
       "view.local": "数据来源：本地估算（官方接口不可用）",
@@ -435,7 +435,7 @@
       "view.title": "MiMo usage & quota",
       "view.refresh": "Refresh",
       "view.openSettings": "Plugin settings",
-      "view.openSettingsHint": "Open the plugin page to edit this plugin's configuration (cookie / pill position / vision routing, …)",
+      "view.openSettingsHint": "Opens the plugin page; click Configure on this plugin's row to edit it (cookie / pill position / vision routing, …). Official navigation goes no deeper than the bundle page.",
       "view.loading": "Loading…",
       "view.official": "Source: Xiaomi MiMo official API",
       "view.local": "Source: local estimate (official API unavailable)",
@@ -3773,14 +3773,23 @@
           return;
         }
         // 0.2 配置页：自带配置的插件把表单注册进**插件页**（ui-plugin-manager
-        // README「配置页」的官方槽）。row 配置的键 = <组合包名>#<行 id>，
-        // 对应 cordis.patch.yml 里的 `- id: mimo-extension`。
+        // README「配置页」的官方槽）。
+        //
+        // 🔴 键必须逐字等于平台自己拼的那个：ui-plugin-manager 内部是
+        //    `rowConfigKey(pkg.name, row.rowId) = \`\${bundle}#\${rowId}\``，
+        //    行的「配置」控件由 `configure.has(row) = ledger.rows.has(rowConfigKey(...))`
+        //    决定 —— **键错一个字符就没有按钮**（PC 与移动端同一个 RowsSection，
+        //    不存在"某端能进"的渲染差异）。
+        //    本插件的 pkg.name = dsh-mimo-extension，行 id（cordis.patch.yml 的
+        //    `- id:`）= dsh-mimo-extension（10-01 由短名改为全名）→ 键必须是
+        //    `dsh-mimo-extension#dsh-mimo-extension`。曾误写短名副作用：
+        //    has() 恒 false → 行配置页无入口（详情页跳转只能落到插件页根）。
         // view === 'summary' 给行卡片的摘要行；'page' 才是带保存按钮的表单。
         ctx.slots.inject("plugins.row.config", () =>
           ctx.slots.register(
             {
               name: "plugins.row.config",
-              key: "dsh-mimo-extension#mimo-extension",
+              key: "dsh-mimo-extension#dsh-mimo-extension",
               locale: NS,
             },
             (slotProps) =>
