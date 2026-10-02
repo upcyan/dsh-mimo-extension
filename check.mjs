@@ -498,18 +498,28 @@ if (loaded) {
     // 2) 脏输入不得抛错：register() 的 resolve 路径会立即调用 schema
     try {
       const value = schema({ mimo: { planTotalTokens: "abc", pillPosition: "nope", cookie: "SECRET-COOKIE" } });
+      // 0.2 的 vol() = .volatile()：字段解析出来是**引用对象** { get() }
+      // （schemastery 的 createVolatile；官方读法 `cfg.x.get()`，见
+      //  dsh-agent-default-model）。断言不能直接比字符串 —— 那是加 volatile
+      // 之前的写法，会把"按设计返回引用"误判成 bug。这里按契约解引用。
+      //
+      // 🔴 10-01 修复记录（真 bug，非断言陈旧）：引用对象是 **truthy**，所以
+      //    `mimo.pillPosition ?? "header"` **不回落** → result.ui 漏出 `{}` →
+      //    浏览器 PILL_SEATS[{}] = undefined → 胶囊不注册/位置乱。
+      //    修法：host.js 新增 derefVolatile() + pickVolatile()，两处透传
+      //    （result.ui 与 /settings 响应）改为"解引用 + 白名单回落"。
+      const deref = (v) =>
+        v && typeof v === "object" && typeof v.get === "function" && Object.keys(v).every((k) => k === "get")
+          ? v.get()
+          : v;
       ok(value?.mimo?.planTotalTokens === 500000000, `脏输入回落默认值（planTotalTokens=${value?.mimo?.planTotalTokens}）`);
-      // 🔴 已知真 bug（非断言陈旧）：0.2 的 vol() = .volatile() 让被包的 volatile
-      //    字段经裸 schema() 解析时返回 {}（而非回落字符串），运行时 /settings 实测
-      //    pillPosition: {}；normalize(116) 兜成 header，但 1692 行 `?? "header"` 对 {}
-      //    truthy 不回落 → summary 里 pillPosition={} 可能让胶囊位置判定异常。
-      //    修 host.js 归另一会话（它 20:45-21:04 做的 0.2 volatile 适配），
-      //    此处用 skip 保留可见、不当本项目 fail（跳过 ≠ 通过）。
-      if (value?.mimo?.pillPosition === "header") {
-        ok(true, "非法 pillPosition 回落 header");
-      } else {
-        skip.push(`已知 bug（待对方会话修 host volatile）：pillPosition 脏输入回落非 header（实为 ${String(value?.mimo?.pillPosition)}）`);
-      }
+      const pos = deref(value?.mimo?.pillPosition);
+      ok(pos === "header", `非法 pillPosition 回落 header（实为 ${JSON.stringify(pos)}）`);
+      // 合法值必须**原样透传**（volatile 包装不得吞掉用户配置）
+      const good = schema({ mimo: { pillPosition: "toolbar", wrapToolbar: false, hideViewWhenNotMiMo: true } });
+      ok(deref(good?.mimo?.pillPosition) === "toolbar", "合法 pillPosition 经 volatile 透传（toolbar）");
+      ok(deref(good?.mimo?.wrapToolbar) === false, "合法 wrapToolbar 经 volatile 透传（false）");
+      ok(deref(good?.mimo?.hideViewWhenNotMiMo) === true, "合法 hideViewWhenNotMiMo 经 volatile 透传（true）");
 
       // 3) 走**真实的** dsh-settings.describe() —— 这正是当年抛错的代码路径。
       //    直接用它导出的 SettingsProvider.prototype，跳过整个 Cordis 装配。
@@ -840,13 +850,22 @@ if (loaded) {
   {
     const src = readFileSync(join(here, "host.js"), "utf8");
     ok(host.name === "mimo-extension", `插件 id = mimo-extension（实为 ${host.name}）`);
-    ok(/const SETTINGS_NS = "dsh-mimo-extension";/.test(src), "设置命名空间用新名");
+    // ⚠ 10-01 同步：host.js 的 SETTINGS_NS 从全名 `dsh-mimo-extension` 改为**短名**
+    // `mimo-extension`，以与本插件 bundle patch（cordis.patch.yml）里那条 `- id:`
+    // 完全一致 —— DSH 的 configEditor.entries() 以 bundle patch 的 insert id 作为
+    // loader 条目的 options.id，而 settings.write(ns) 按 `row.options.id === ns` 查条目；
+    // 不一致时保存报 `No configurable plugin entry`（旧断言的字符串已过时）。
+    ok(/const SETTINGS_NS = "mimo-extension";/.test(src), "设置命名空间 = 短名（与 bundle patch id 一致）");
+    ok(/const LEGACY_SETTINGS_NS_FULL = "dsh-mimo-extension";/.test(src), "全名保留为迁移来源之一");
     // ★ 旧名必须**只**作为迁移来源保留
     ok(/const LEGACY_SETTINGS_NS = "dsh-mimo-usage";/.test(src), "保留旧命名空间常量作迁移来源");
     const legacyUses = (src.match(/LEGACY_SETTINGS_NS/g) || []).length;
     ok(legacyUses >= 2, `LEGACY_SETTINGS_NS 被真正使用（${legacyUses} 处：定义 + 读取）`);
-    ok(/svc\.section\(LEGACY_SETTINGS_NS\)/.test(src),
-      "★ 用 settings.section() 读旧段（不是 get()）");
+    // 10-01 同步：旧段现在有**两个**（dsh-mimo-extension / dsh-mimo-usage），
+    // host.js 用 for 循环遍历 `[LEGACY_SETTINGS_NS_FULL, LEGACY_SETTINGS_NS]` 逐个 section() 读。
+    // 关键契约不变：必须用 section()（读原始 document）而不是 get()（只认已注册 ns）。
+    ok(/svc\.section\(ns\)/.test(src) && /for \(const ns of \[LEGACY_SETTINGS_NS_FULL, LEGACY_SETTINGS_NS\]\)/.test(src),
+      "★ 用 settings.section() 遍历两个旧段读（不是 get()）");
     // ⚠ get() 只返回已注册命名空间 → 旧段读不到，迁移会静默失效
     ok(!/settingsService\.get\(LEGACY_SETTINGS_NS\)/.test(src),
       "★ 不用 get() 读旧段（它只认已注册 ns，会静默失败）");
@@ -1145,6 +1164,42 @@ if (loaded) {
     "★ writable 跟随 0.2 写回退通道（否则表单保存按钮永久禁用）");
 }
 
+  // ---------- 10-01 修复：volatile 引用对象不得从 result.ui / settings 漏出 ----------
+  // 根因：.volatile() 字段解析出来是引用对象 { get() }，对象是 truthy，
+  //       `mimo.pillPosition ?? "header"` **不回落** → JSON 序列化后变 `{}` →
+  //       浏览器 PILL_SEATS[{}] = undefined → 胶囊不注册/位置乱。
+  // 修法：derefVolatile() 解引用 + pickVolatile() 白名单回落，两处透传都要用。
+  // 反向验证：把任一处的 pickVolatile 换回 `?? "header"` → 本条报红。
+  {
+    // 本地读一次源码（本块独立作用域，外层的 hostSrc 在别的块里）
+    const hostSrc = readFileSync(join(here, "host.js"), "utf8");
+    ok(/function derefVolatile\(v\)/.test(hostSrc), "★ 有 volatile 引用解包器 derefVolatile()");
+    ok(/function pickVolatile\(v, allowed, fallback\)/.test(hostSrc),
+      "★ 有 volatile 白名单回落器 pickVolatile()");
+    ok(/const PILL_POSITIONS = \["header", "toolbar", "above", "hidden"\];/.test(hostSrc),
+      "胶囊位置白名单常量与 mimoSettingsSchema 一致");
+    // 两处透传必须都走 pickVolatile（不能留裸 ?? ）
+    const pickUses = (hostSrc.match(/pickVolatile\(/g) || []).length;
+    ok(pickUses >= 2, `result.ui 与 /settings 两处透传都用 pickVolatile（${pickUses} 处）`);
+    ok(!/pillPosition:\s*mimo\.pillPosition\s*\?\?/.test(hostSrc),
+      "★ 不再有裸 \`mimo.pillPosition ?? ...\`（对象 truthy 不回落）");
+    ok(!/pillPosition:\s*m\.pillPosition\s*\?\?/.test(hostSrc),
+      "★ 不再有裸 \`m.pillPosition ?? ...\`（/settings 响应同样要解引用）");
+    // 行为级：deref 必须真能取出值（不只是有函数）
+    const fakeRef = { get: () => "toolbar" };
+    ok(
+      typeof host.derefVolatile === "function" && host.derefVolatile(fakeRef) === "toolbar",
+      "derefVolatile 对引用对象返回其 get() 的值",
+    );
+    if (typeof host.derefVolatile === "function" && typeof host.pickVolatile === "function") {
+      ok(host.pickVolatile(fakeRef, ["header", "toolbar"], "header") === "toolbar",
+        "pickVolatile 接受引用对象并透传合法值");
+      ok(host.pickVolatile({ get: () => "evil" }, ["header", "toolbar"], "header") === "header",
+        "pickVolatile 对非法值回落兜底");
+      ok(host.pickVolatile({ get: () => 123 }, ["header"], "header") === "header",
+        "pickVolatile 对非字符串回落兜底");
+    }
+  }
 // ---------- 输出 ----------
 console.log("通过：");
 for (const line of pass) console.log(`  ✓ ${line}`);

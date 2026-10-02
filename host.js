@@ -42,7 +42,17 @@ const REQUEST_TIMEOUT_MS = 15000;
 const CACHE_TTL_MS = 60_000;
 
 /** settings.yaml 里的配置命名空间。 */
-const SETTINGS_NS = "dsh-mimo-extension";
+// ⚠ 必须与本插件 bundle patch（node_modules/dsh-mimo-extension/cordis.patch.yml）
+// 里那条 `- id:` **完全一致**：DSH 的 configEditor.entries() 以 bundle patch 的
+// insert id 作为 loader 条目的 options.id，而 settings.write(ns) 正是按
+// `row.options.id === ns` 查找条目的。profile patch 里的同名条目只是**覆盖 config**，
+// 不会改变 options.id。
+// 历史：bundle patch 用的是短名 `mimo-extension`，而这里写的是全名
+// `dsh-mimo-extension` → 永远匹配不上 → 保存报 `No configurable plugin entry`。
+// 对照：dsh-ui-cyanmod 三处同名，所以它一直正常。
+const SETTINGS_NS = "mimo-extension";
+// 旧命名空间（本插件 2026-09-27 改名前），仅作为**迁移来源**读取。
+const LEGACY_SETTINGS_NS_FULL = "dsh-mimo-extension";
 /**
  * 重命名前的设置命名空间。
  *
@@ -54,6 +64,7 @@ const SETTINGS_NS = "dsh-mimo-extension";
  * 之后旧段不再读取（但**不删除** —— 留作回滚依据，用户可手动清理）。
  */
 const LEGACY_SETTINGS_NS = "dsh-mimo-usage";
+// 上轮曾把配置写到 `dsh-mimo-extension` 段；改名后要把它也迁过来，否则用户配置丢。
 
 /**
  * 宿主路由前缀。刻意【不用】`/api/*`。
@@ -99,12 +110,89 @@ const ROUTE_PREFIX = "/dsh-mimo-extension";
  * 真正的 schema 由 `buildMimoSettingsSchema()` 用真 schemastery 构造：
  * 自带 toJSON / type / dict，并把 cookie 标成 `role: 'secret'`。
  */
+/**
+ * 解包 schemastery `.volatile()` 字段的**引用对象**。
+ *
+ * 🔴 10-01 真 bug（0.2 引入 volatile 之后暴露）：
+ * `.volatile()` 字段解析出来的不是标量，而是引用对象 `{ get() }`（createVolatile 形态，
+ * 官方判定 `isVolatile` = 对象且带 `write`）。它的危害是**静默**的：
+ *   - `JSON.stringify(ref)` → `{}`（看上去像空对象，实为引用）
+ *   - `ref ?? "header"` → **不回落**（对象是 truthy）→ `result.ui.pillPosition` 变成 `{}`
+ *     → 浏览器拿 `{}` 查座位表 → `PILL_SEATS[{}]` = undefined → 胶囊不注册/位置乱
+ *
+ * `mimoSettingsSchema` 的读写器已 unwrap，但它只覆盖 normalize 路径；
+ * **`result.ui` 那两处透传读的是 `currentMimo()`（settings 服务解析值）**，绕过了 normalize，
+ * 所以必须在这里再兜一层。姊妹项目 dsh-usage-cyanmod 用同样的 unwrap 范式。
+ *
+ * @param {unknown} v 任意值（可能是引用对象/标量/undefined）。
+ * @returns {unknown} 解引用后的标量；不是引用对象时原样返回。
+ */
+export function derefVolatile(v) {
+  if (v === null || typeof v !== "object") return v;
+  if (typeof v.get !== "function") return v;
+  try {
+    return v.get();
+  } catch {
+    return v;
+  }
+}
+
+/** 胶囊位置的合法取值（与 mimoSettingsSchema 的 positions 一致）。 */
+const PILL_POSITIONS = ["header", "toolbar", "above", "hidden"];
+
+/**
+ * 读一个 volatile 字符串偏好并做白名单回落。
+ *
+ * ⚠ 不能写成 `mimo.pillPosition ?? "header"` —— 引用对象是 truthy，`??` 不生效。
+ *
+ * @param {unknown} v 原始值（可能是引用对象）。
+ * @param {string[]} allowed 合法取值。
+ * @param {string} fallback 兜底值。
+ * @returns {string} 一定落在 allowed 里的字符串。
+ */
+export function pickVolatile(v, allowed, fallback) {
+  const x = derefVolatile(v);
+  return typeof x === "string" && allowed.includes(x) ? x : fallback;
+}
+
 function mimoSettingsSchema(input) {
   const src = input && typeof input === "object" ? input : {};
   const mimo = src.mimo && typeof src.mimo === "object" ? src.mimo : {};
-  const num = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
-  const str = (v, fallback) => (typeof v === "string" ? v : fallback);
-  const bool = (v, fallback) => (typeof v === "boolean" ? v : fallback);
+  // ⚠ schemastery `.volatile()` 字段解析出来的是**引用对象** `{ get(), [write] }`
+  // （createVolatile 的形态，官方判定 `isVolatile` = 对象且带 `write`）——
+  // 直接当字符串/布尔用会**全部落回默认值**（用户改了设置却「不生效」），
+  // 而经 JSON.stringify / 打印时会显示成 `{}`（看上去像空对象，实为引用）。
+  // 官方读法见 dsh-agent-default-model：`this.config.provider.get()`。
+  // 姊妹项目 dsh-usage-cyanmod 已用同一范式修复（它的 check.mjs 有对应断言）。
+  const unwrap = (v) => {
+    if (v === null || typeof v !== "object") return v;
+    if (typeof v.get !== "function") return v;
+    // 普通配置对象也可能恰好有 get 键（用户数据），只认「引用协议」：
+    // 引用对象冻结且只有 get/write 自有键。
+    const keys = Object.keys(v);
+    if (keys.length > 0 && keys.every((k) => k === "get" || typeof k === "symbol")) {
+      try {
+        return v.get();
+      } catch {
+        return v;
+      }
+    }
+    return v;
+  };
+  // ⚠ 三个读取器都必须先 unwrap：volatile 标记在**字段级**
+  // （pillPosition / wrapToolbar / hideViewWhenNotMiMo），拿到的每个值都是引用对象。
+  const num = (v, fallback) => {
+    const x = unwrap(v);
+    return Number.isFinite(Number(x)) ? Number(x) : fallback;
+  };
+  const str = (v, fallback) => {
+    const x = unwrap(v);
+    return typeof x === "string" ? x : fallback;
+  };
+  const bool = (v, fallback) => {
+    const x = unwrap(v);
+    return typeof x === "boolean" ? x : fallback;
+  };
   const positions = ["header", "toolbar", "above", "hidden"];
   const pricing = mimo.pricing && typeof mimo.pricing === "object" ? mimo.pricing : {};
   const fallbackPrice = pricing.fallbackPrice && typeof pricing.fallbackPrice === "object" ? pricing.fallbackPrice : {};
@@ -252,6 +340,15 @@ export function buildFallbackSettingsSchema() {
   return resolve;
 }
 
+// 0.2 必需：DSH 的 settings.describe()/write() 走 volatileForm，**只保留带
+// `.volatile()` 标记的叶子**。没有标记的字段会被逐层剔除 → dict 变空 →
+// volatileForm 返回 undefined → 该命名空间被静默跳过（设置卡不出现），
+// 保存报「has no volatile fields」。与 dsh-ui-cyanmod 用同一模式；
+// 旧版 schemastery 无 volatile() 时原样返回，向后兼容。
+function vol(field) {
+  return field && typeof field.volatile === "function" ? field.volatile() : field;
+}
+
 export function buildMimoSettingsSchema(ctx) {
   const factory = loadSchemaFactory(ctx);
   if (!factory) return undefined;
@@ -262,9 +359,9 @@ export function buildMimoSettingsSchema(ctx) {
       cookie: factory.string().default("").role("secret"),
       cookieRef: factory.string().default("MIMO_CONSOLE_COOKIE"),
       planTotalTokens: factory.number().default(500_000_000),
-      pillPosition: factory.string().default("header"),
-      wrapToolbar: factory.boolean().default(true),
-      hideViewWhenNotMiMo: factory.boolean().default(false),
+      pillPosition: vol(factory.string().default("header")),
+      wrapToolbar: vol(factory.boolean().default(true)),
+      hideViewWhenNotMiMo: vol(factory.boolean().default(false)),
       visionRouting: factory.boolean().default(false),
       visionRoutingTextModels: factory.boolean().default(false),
       visionRoutingAllMimo: factory.boolean().default(false),
@@ -1450,13 +1547,32 @@ function persistDailyCreditsSync(summary) {
       if (Array.isArray(parsed.modeTimeline)) store.modeTimeline = parsed.modeTimeline;
     }
   } catch { /* 首次或损坏 → 从空开始 */ }
+  // 🔴 按字段取**最大值**合并，不做整体覆盖。
+  //
+  // 为什么不能用覆盖：`summary.local.days` 来自**当前存活会话**的重算
+  // （`token-usage/` 目录不存在时走进程内会话统计，见 buildSummary 的取数顺序），
+  // 而会话会被删除、core 会重启 —— 重算结果**可能比上一次小**。
+  // 旧实现 `store.days[date] = {...}` 会把一整天抹成"最后一个被 ingest 的会话"
+  // 的量（实测 09-27 因此低估约 98 倍：文件 4.31 credits vs 逐笔加总 422.04）。
+  // 单日内的各分量都是单调累加的，所以取 max 是**单调、不丢历史**的安全合并。
+  // ⚠ 已知残留：这仍无法还原"被删除会话"贡献的那部分（只保证不倒退）；
+  //    要彻底精确需按 sessionId 累计，属后续工作。
+  const pickMax = (prev, next) => {
+    const a = Number.isFinite(prev) ? prev : 0;
+    const b = Number.isFinite(next) ? next : 0;
+    return Math.max(a, b);
+  };
   for (const d of summary?.local?.days ?? []) {
-    if (d?.date) {
-      store.days[d.date] = {
-        tokens: d.tokens ?? 0, calls: d.calls ?? 0,
-        credits: d.credits ?? 0, cCache: d.cCache ?? 0, cMiss: d.cMiss ?? 0, cOut: d.cOut ?? 0,
-      };
-    }
+    if (!d?.date) continue;
+    const prev = store.days[d.date] ?? {};
+    store.days[d.date] = {
+      tokens: pickMax(prev.tokens, d.tokens ?? 0),
+      calls: pickMax(prev.calls, d.calls ?? 0),
+      credits: pickMax(prev.credits, d.credits ?? 0),
+      cCache: pickMax(prev.cCache, d.cCache ?? 0),
+      cMiss: pickMax(prev.cMiss, d.cMiss ?? 0),
+      cOut: pickMax(prev.cOut, d.cOut ?? 0),
+    };
   }
   try {
     mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true });
@@ -1661,7 +1777,9 @@ async function buildSummary(deps, signal, options = {}) {
 
   // UI 偏好透传（胶囊位置 / 工具栏换行），供客户端渲染决策
   result.ui = {
-    pillPosition: mimo.pillPosition ?? "header",
+    // ⚠ 必须 deref + 白名单：volatile 字段是引用对象，`?? "header"` 不回落（truthy），
+    // 漏出去会让浏览器收到 `{}`（详细根因见 derefVolatile 的注释）。
+    pillPosition: pickVolatile(mimo.pillPosition, PILL_POSITIONS, "header"),
     wrapToolbar: mimo.wrapToolbar !== false,
     hideViewWhenNotMiMo: mimo.hideViewWhenNotMiMo === true,
     visionRouting: mimo.visionRouting === true,
@@ -2211,19 +2329,8 @@ export function apply(ctx, config) {
       if (!svc || typeof svc.section !== "function" || typeof svc.update !== "function") {
         return "skip: 设置服务不可用";
       }
-      let legacy;
-      try {
-        legacy = svc.section(LEGACY_SETTINGS_NS);
-      } catch {
-        return "skip: 旧段读取失败";
-      }
-      if (!legacy || typeof legacy !== "object") return "skip: 无旧配置";
-      // 本插件在旧段里的实际字段都在 `mimo` 子对象下
-      const legacyMimo = legacy.mimo;
-      if (!legacyMimo || typeof legacyMimo !== "object" || Object.keys(legacyMimo).length === 0) {
-        return "skip: 旧段为空";
-      }
-      // 新段已有内容 → 不覆盖（用户已经在新名字下配置过）
+      // 新段已有内容 → 不覆盖（用户已经在新名字下配置过）。
+      // 这一段必须**先**判，否则链式迁移会拿旧段覆盖用户当前配置。
       let current;
       try {
         current = svc.section(SETTINGS_NS);
@@ -2234,9 +2341,26 @@ export function apply(ctx, config) {
       if (currentMimo && typeof currentMimo === "object" && Object.keys(currentMimo).length > 0) {
         return "skip: 新段已有配置（不覆盖）";
       }
+      // 链式迁移：按「新→旧」顺序挑第一个有内容的段。三个名字的历史：
+      //   dsh-mimo-usage（最早）→ dsh-mimo-extension（上轮）→ mimo-extension（当前，
+      //   与 bundle patch 的 id 一致）。任一旧段有配置都要能搬过来。
+      let legacy;
+      let legacyFrom = null;
+      for (const ns of [LEGACY_SETTINGS_NS_FULL, LEGACY_SETTINGS_NS]) {
+        try { legacy = svc.section(ns); } catch { legacy = undefined; }
+        const m = legacy?.mimo;
+        if (m && typeof m === "object" && Object.keys(m).length > 0) { legacyFrom = ns; break; }
+        legacy = undefined;
+      }
+      if (!legacyFrom || !legacy) return "skip: 无旧配置";
+      // 本插件在旧段里的实际字段都在 `mimo` 子对象下
+      const legacyMimo = legacy.mimo;
+      if (!legacyMimo || typeof legacyMimo !== "object" || Object.keys(legacyMimo).length === 0) {
+        return "skip: 旧段为空";
+      }
       try {
         await svc.update(SETTINGS_NS, { mimo: legacyMimo });
-        return `migrated: ${Object.keys(legacyMimo).join(", ")}`;
+        return `migrated from ${legacyFrom}: ${Object.keys(legacyMimo).join(", ")}`;
       } catch (error) {
         return `failed: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -2262,9 +2386,11 @@ export function apply(ctx, config) {
             "配置仍可读写（含旧命名空间迁移），但设置页里 Cookie 不会被标成密文",
         );
       }
-      const scope = settingsCtx.settings.register(SETTINGS_NS, schema, { base: config ?? {} });
+      const scope = (typeof settingsCtx.settings?.register === "function"
+        ? settingsCtx.settings.register(SETTINGS_NS, schema, { base: config ?? {} })
+        : null);   // 0.2 已移除 settings.register：安全降级到 settingsService.update
       userSettings = scope;
-      scope.watch(() => {
+      if (scope && typeof scope.watch === "function") scope.watch(() => {
         deps.clearOfficialCache?.();   // Cookie 改了：官方数据必须重取
       });
 
@@ -2418,7 +2544,8 @@ export function apply(ctx, config) {
                       cookieConfigured: Boolean(resolved.cookie),
                       cookieSource: resolved.source,
                       planTotalTokens: m.planTotalTokens ?? 0,
-                      pillPosition: m.pillPosition ?? "header",
+                      // ⚠ 同 result.ui：必须先 deref 再白名单，否则回传 `{}`。
+                      pillPosition: pickVolatile(m.pillPosition, PILL_POSITIONS, "header"),
                       wrapToolbar: m.wrapToolbar !== false,
                       hideViewWhenNotMiMo: m.hideViewWhenNotMiMo === true,
                       visionRouting: m.visionRouting === true,
@@ -2432,7 +2559,7 @@ export function apply(ctx, config) {
                       // （0.2 实测 writable:false → 界面 disabled）。
                       writable:
                         Boolean(userSettings) ||
-                        typeof settingsCtx?.settings?.update === "function",
+                        typeof settingsService?.update === "function",
                       // 登录是否失效 + 失败原因（供界面给「重新登录」引导）。
                       // 从缓存里的官方结果读，不额外打网络。
                       authExpired: officialCache?.authExpired === true,
@@ -2442,7 +2569,10 @@ export function apply(ctx, config) {
                   return;
                 }
                 if (req.method === "POST" || req.method === "PUT") {
-                  if (!userSettings) {
+                  // 0.2 适配：`settings.register` 已移除，scope 恒为 null，但写通道
+                  // 仍在（settingsService.update，与 dsh-usage-cyanmod 同一修法）。
+                  // 只判 userSettings 会在 0.2 下永远报「settings 未装配」。
+                  if (!userSettings && typeof settingsService?.update !== "function") {
                     writeJson(res, 503, { ok: false, error: "设置服务不可用（settings 未装配）" });
                     return;
                   }
@@ -2464,9 +2594,9 @@ export function apply(ctx, config) {
                   if (typeof body.visionRoutingAllMimo === "boolean") patch.visionRoutingAllMimo = body.visionRoutingAllMimo;
                   if (userSettings && typeof userSettings.update === "function") {
                     await userSettings.update({ mimo: patch });
-                  } else if (typeof settingsCtx.settings?.update === "function") {
+                  } else if (typeof settingsService?.update === "function") {
                     // 0.2：scope 不可用，直接按 ns 写用户层（SettingsForms.update）
-                    await settingsCtx.settings.update(SETTINGS_NS, { mimo: patch });
+                    await settingsService.update(SETTINGS_NS, { mimo: patch });
                   } else {
                     throw new Error("settings 写入通道不可用（0.1.5/0.2 均未命中）");
                   }
@@ -2716,7 +2846,6 @@ function formatSummaryText(s, query = "both") {
   return lines.join("\n") || "暂无数据";
 }
 
-export default apply;
 
 // ── 0.2 静态 Config 导出 ─────────────────────────────────────────────
 // 0.2 的设置系统从 `entry.fiber.runtime.Config` 读取 schema（schemastery，
@@ -2725,7 +2854,32 @@ export default apply;
 // 部署环境必有 @deepseek-ai/schemastery）。
 let __staticConfig;
 try {
-  const __S = loadSchemaFactory({ baseUrl: new URL("../../", import.meta.url).href });
+  const __S = loadSchemaFactory({ baseUrl: (() => {
+    // 0.2 Config 的 schemastery 解析锚点（修复）：host.js 位于
+    //   <profiles>/<profile>/node_modules/<pkg>/host.js
+    // 而 schemastery 在**回退层** `<profiles>/node_modules/` 里 —— Node 的解析
+    // 不会从 `<profile>/node_modules` 跨到上一级 `<profiles>/node_modules`，
+    // 所以 `../../`（= <profile>/）永远找不到它，Config 退化成 undefined，
+    // 进而 describe() 静默跳过该 ns、save 报「No configurable plugin entry」。
+    // 这里按层级逐个尝试，命中即用。
+    for (const up of ["../../../", "../../../../", "../../"]) {
+      try {
+        const url = new URL(up, import.meta.url).href;
+        const probe = createRequire(url)("@deepseek-ai/schemastery/package.json");
+        if (probe) return url;
+      } catch { /* 换下一层 */ }
+    }
+    return new URL("../../../", import.meta.url).href;
+  })() });
   if (__S) __staticConfig = buildMimoSettingsSchema(__S);
 } catch { /* schemastery 不可用时退化为无设置页 */ }
 export const Config = __staticConfig;
+
+// 0.2 关键（修复「保存失败：设置服务不可用」）：Cordis 的 `unwrapExports` 在模块
+// **有 default 导出**时只返回 default（loader: `exports = exports.default ?? exports`），
+// 而 `plugin.Config` 是从这个返回值上读的 —— 只写 `export const Config` 会在
+// unwrap 后被丢掉 ⇒ `runtime.Config === undefined` ⇒ `settings.describe()` 静默
+// 跳过本 ns、设置页不出现、保存报「No configurable plugin entry」。
+// 把 Config 同时挂到 default 导出的函数对象上，unwrap 后仍能读到。
+try { apply.Config = __staticConfig; } catch { /* 极端情况忽略 */ }
+export default apply;

@@ -27,7 +27,7 @@
 #      （expired/none → 按量；active/unknown → 套餐）
 #   5) 其余 provider → 按量（pay-as-you-go）
 - insert:
-    - id: mimo-extension
+    - id: dsh-mimo-extension
       name: dsh-mimo-extension
       config:
         mimo:
