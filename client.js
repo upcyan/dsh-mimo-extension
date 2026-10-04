@@ -32,6 +32,14 @@
     //   module-loaded（脚本已执行）→ factory（模块表已调工厂）→
     //   apply-entered（apply 开跑）→ applied（槽位注册完成）/ skipped（被守卫拦下）
     const ROUTE_PREFIX = "/dsh-mimo-extension";
+    /**
+     * 本插件的 **npm 包名**，同时就是组合包名（`pkg.name`）。两个官方用途：
+     *   · `pluginNavigation.openBundle(PACKAGE_NAME)` —— 深链到本插件详情页；
+     *   · `plugins.bundle.config` 的 `key` —— 官方 `PackageDetail` 用
+     *     `ledger.bundles.has(pkg.name)` 判断"这个组合包有没有配置区"，
+     *     key 不匹配就**整块不渲染**（见下方注册处说明）。
+     */
+    const PACKAGE_NAME = "dsh-mimo-extension";
   /**
      * fnOS 网关会把页面挂在 `/app/dsh-fnos/dsh/` 下，并注入
      * `globalThis.__FNOS_GATEWAY_PREFIX__`；官方客户端模块全部靠它拼请求路径
@@ -3984,11 +3992,48 @@
         //    `dsh-mimo-extension#dsh-mimo-extension`。曾误写短名副作用：
         //    has() 恒 false → 行配置页无入口（详情页跳转只能落到插件页根）。
         // view === 'summary' 给行卡片的摘要行；'page' 才是带保存按钮的表单。
+        // 🔴 为什么必须**两个座都注册**（这是"进插件设置页还得再点一下组件"的根因）：
+        //
+        // 官方 `PackageDetail`（组合包详情页）渲染配置区的条件是
+        //     `configured: ledger.bundles.has(openPkg.name)`
+        // 而 `ledger.bundles` 只收集 **`plugins.bundle.config`** 座的 key
+        // （`ledger.rows` 才收 `plugins.row.config`）。我们原先**只**注册
+        // `plugins.row.config` → 打开插件详情页时 `configured === false` →
+        // **配置区整块不渲染** → 必须再点进「包含的组件」里那一行才看得到表单。
+        //
+        // 官方范本（`dsh-experimental-client-ui-voice-input`）正是注册
+        // `plugins.bundle.config` 且 `key` = **组合包名**：
+        //     ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
+        //       name: "plugins.bundle.config",
+        //       key: "@deepseek-ai/dsh-experimental-voice-input-bundle", … }))
+        // 于是 `ledger.bundles.has("dsh-mimo-extension")` 成立 → 配置区直接出现。
+        //
+        // `plugins.row.config` **保留**：那是从「包含的组件」点进单行时的入口，
+        // 去掉它那一行就没有配置入口了。两处渲染同一表单，互不冲突。
+        // （同源修复见 dsh-usage-cyanmod 的 10-04 条目 ㉕。）
+        const renderConfigForm = () => h(MimoSettingsForm, {});
+
+        // ① 组合包座：让**插件详情页直接显示**配置区（`configured` 判据依赖它）。
+        ctx.slots.inject("plugins.bundle.config", () =>
+          ctx.slots.register(
+            { name: "plugins.bundle.config", key: PACKAGE_NAME, locale: NS },
+            (slotProps) =>
+              slotProps?.view === "summary"
+                ? h(
+                    "span",
+                    { style: { fontSize: "12px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
+                    t("view.title"),
+                  )
+                : renderConfigForm(),
+          ),
+        );
+
+        // ② 行座：从「包含的组件」点进单行时的入口（保留，勿删）。
         ctx.slots.inject("plugins.row.config", () =>
           ctx.slots.register(
             {
               name: "plugins.row.config",
-              key: "dsh-mimo-extension#dsh-mimo-extension",
+              key: `${PACKAGE_NAME}#${PACKAGE_NAME}`,
               locale: NS,
             },
             (slotProps) =>
@@ -3998,7 +4043,7 @@
                     { style: { fontSize: "12px", color: "var(--dsw-alias-label-tertiary, #59636e)" } },
                     t("view.title"),
                   )
-                : h(MimoSettingsForm, {}),
+                : renderConfigForm(),
           ),
         );
         ctx.slots.inject("conversation.view", () => {

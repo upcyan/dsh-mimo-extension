@@ -450,35 +450,76 @@ for (const scene of SCENARIOS) {
       const viewSeg = src.slice(src.indexOf("function MimoUsageView("), src.indexOf("function MimoSettingsForm("));
       ok(!/h\(MimoSettingsForm/.test(viewSeg),
         "★ 详情页不再内嵌配置表单（0.2 已迁到插件页）");
-      // ★ 键必须逐字等于平台自己拼的 `\${pkg.name}#\${rowId}\`（ui-plugin-manager 的
-      //   rowConfigKey），否则 configure.has(row) 恒 false → 行配置页**没有入口**
-      //   （PC/移动端同一个 RowsSection，不存在单端渲染差异）。
-      //   这里**从真实文件推导**期望值，不写死 —— 10-01 行 id 从短名改全名时，
-      //   写死的旧断言（#mimo-extension）会静默把错键固化。
+      // ★ 两个座**都必须**注册（10-04 同源修复，对照 dsh-usage-cyanmod 条目 ㉕）：
+      //
+      //   官方 `PackageDetail` 渲染配置区的判据是
+      //       `configured: ledger.bundles.has(openPkg.name)`
+      //   而 `ledger.bundles` 只收 **`plugins.bundle.config`** 座的 key
+      //   （`ledger.rows` 才收 `plugins.row.config`）。只注册 row 座 ⇒
+      //   打开插件详情页 `configured === false` ⇒ **配置区整块不渲染** ⇒
+      //   用户"跳转到设置页还要再点一下组件才能进入设置"。
       {
         // 反向验证脚本会把 check-client.mjs 复制到临时目录单独跑（只带 client.js），
         // 那时 package.json / cordis.patch.yml 不在 → 读不到期望键。此时**降级**为
         // "按当前注册的键静态比对"（不比推导值），不阻断 —— 否则 verify-* 全炸。
+        let pkgName = null;
         let expectedKey = null;
         try {
-          const pkgName = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).name;
+          pkgName = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).name;
           const patchSrc = readFileSync(new URL("./cordis.patch.yml", import.meta.url), "utf8");
           const rowId = (/^\s*-\s*id:\s*(\S+)\s*$/m.exec(patchSrc) || [])[1];
           if (pkgName && rowId) expectedKey = pkgName + "#" + rowId;
         } catch {
           /* 临时目录（反向验证）没有这两个文件 —— 降级比对 */
         }
-        const registeredKey = (/key:\s*"([^"]+#[^"]+)"/.exec(src) || [])[1] ?? null;
-        if (expectedKey) {
+
+        // ── ① 组合包座：详情页直接显示配置区（`ledger.bundles.has(pkg.name)` 判据）──
+        // key 既可以是字面量 "dsh-mimo-extension"，也可以是模板串 ${PACKAGE_NAME}；
+        // 两种都接受，但**必须能证明它解析成包名**。
+        {
+          const bundleHasSlot = /inject\("plugins\.bundle\.config"/.test(src);
+          const bundleKeyLiteral =
+            /name:\s*"plugins\.bundle\.config"\s*,\s*key:\s*"([^"#]+)"/.exec(src)?.[1] ?? null;
+          const bundleKeyTemplate = /name:\s*"plugins\.bundle\.config"\s*,\s*key:\s*PACKAGE_NAME/.test(src);
+          // PACKAGE_NAME 常量必须确实等于包名（否则模板串解析成别的值）
+          const pkgConst = /const PACKAGE_NAME = "([^"]+)"/.exec(src)?.[1] ?? null;
+          const keyOk = bundleKeyTemplate
+            ? pkgConst !== null && (pkgName === null || pkgConst === pkgName)
+            : bundleKeyLiteral !== null && (pkgName === null || bundleKeyLiteral === pkgName);
           ok(
-            new RegExp('inject\\("plugins\\.row\\.config"').test(src) && registeredKey === expectedKey,
-            `★ 配置表单注册进插件页 plugins.row.config（键 = 组合包#行 id = ${expectedKey}，实注册 ${registeredKey}）`,
+            bundleHasSlot && keyOk,
+            `★ 注册 plugins.bundle.config（key = 组合包名 ${pkgName ?? "(未知)"}）—— 缺它插件详情页配置区整块不渲染` +
+              `（实: slot=${bundleHasSlot} 字面量=${bundleKeyLiteral} 模板=${bundleKeyTemplate} 常量=${pkgConst}）`,
           );
-        } else {
-          ok(
-            new RegExp('inject\\("plugins\\.row\\.config"').test(src) && registeredKey !== null,
-            `★ 配置表单注册进插件页 plugins.row.config（键 = ${registeredKey}；无 package.json 可推导，降级比对）`,
-          );
+        }
+
+        // ── ② 行座：从「包含的组件」点进单行时的入口（保留）──
+        {
+          const rowRegisteredKey = (/key:\s*"([^"]+#[^"]+)"/.exec(src) || [])[1] ?? null;
+          const rowKeyTemplate = /name:\s*"plugins\.row\.config"\s*,\s*key:\s*`\$\{PACKAGE_NAME\}#\$\{PACKAGE_NAME\}`/.test(src);
+          if (expectedKey) {
+            ok(
+              new RegExp('inject\\("plugins\\.row\\.config"').test(src) &&
+                (rowRegisteredKey === expectedKey || rowKeyTemplate),
+              `★ 配置表单注册进插件页 plugins.row.config（键 = 组合包#行 id = ${expectedKey}，实注册 ${rowRegisteredKey ?? (rowKeyTemplate ? "模板串" : "null")}）`,
+            );
+          } else {
+            ok(
+              new RegExp('inject\\("plugins\\.row\\.config"').test(src) &&
+                (rowRegisteredKey !== null || rowKeyTemplate),
+              `★ 配置表单注册进插件页 plugins.row.config（键 = ${rowRegisteredKey ?? (rowKeyTemplate ? "模板串" : "null")}；无 package.json 可推导，降级比对）`,
+            );
+          }
+        }
+
+        // ── ③ 两处渲染**同一表单**（避免两份漂移）──
+        ok(/const renderConfigForm = \(\) => h\(MimoSettingsForm, \{\}\)/.test(src),
+          "两座共用单一 renderConfigForm()（防两份表单漂移）");
+        {
+          // 调用处（定义行是 `const renderConfigForm = () => …`，中间有 ` = `，
+          // 不匹配 `renderConfigForm()`）→ 期望**恰好两处使用**（bundle 座 + row 座）。
+          const uses = (src.match(/renderConfigForm\(\)/g) || []).length;
+          ok(uses >= 2, `renderConfigForm 被两个座复用（调用 ${uses} 处，期望 ≥2）`);
         }
       }
       ok(/exports\.inject = \[[^\]]*"layout"/.test(src),
