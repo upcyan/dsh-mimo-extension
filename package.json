@@ -1,6 +1,6 @@
 {
   "name": "dsh-mimo-extension",
-  "version": "1.1.17",
+  "version": "1.1.18",
   "private": false,
   "type": "module",
   "description": "mi logo + quota ring beside the model selector, plus a MiMo usage detail tab (billing type, plan quota, per-session attribution, cost estimate).",
