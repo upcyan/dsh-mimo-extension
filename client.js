@@ -377,8 +377,8 @@
       "cfg.readonly": "当前环境设置不可写（settings 服务未装配）",
       "cfg.cookieHelp": "获取步骤：登录 platform.xiaomimimo.com/console/balance → DevTools → Network → 任一 /api/v1 请求 → 复制完整 Cookie 请求头（需含 api-platform_serviceToken 与 userId）。",
       "view.authExpiredTitle": "MiMo 登录已失效",
-      "view.authExpiredHint": "官方接口返回 401。本页数字是本地估算，不是你的真实套餐额度。重新登录小米账号并更新 Cookie 即可恢复。",
-      "view.authExpiredAction": "去更新 Cookie →",
+      "view.authExpiredHint": "官方接口返回 401。本页数字是本地估算，不是你的真实套餐额度。重新登录小米账号后，到「设置 → 插件 → dsh-mimo-extension」填入新 Cookie 即可恢复。",
+      "view.authExpiredAction": "去更新 Cookie（打开插件设置）→",
       "view.localGeneric": "本地估算（未登录或登录已失效）",
       "cfg.verify": "验证",
       "cfg.verifying": "验证中…",
@@ -402,7 +402,7 @@
       "cfg.cookieWhy": "这个 Cookie 用来读套餐（Token Plan）额度：tokenPlan/detail 与 tokenPlan/usage 两个接口都必须带它；按量计费的余额（balance）也是同一个凭据。",
     
       "view.staleSource": "官方数据（缓存，截至 {time}）",
-            "view.authExpiredStale": "官方接口返回 401，登录已失效。下面显示的是上次成功获取的缓存数据（截至 {time}），不是实时额度。重新登录小米账号并更新 Cookie 即可恢复。",
+            "view.authExpiredStale": "官方接口返回 401，登录已失效。下面显示的是上次成功获取的缓存数据（截至 {time}），不是实时额度。重新登录小米账号后，到「设置 → 插件 → dsh-mimo-extension」填入新 Cookie 即可恢复。",
             "cfg.visionAllMimo": "为所有 MiMo 渠道的模型声明视觉能力",
             "cfg.visionAllMimoHint": "判定为 MiMo 渠道（按地址，未知时按名称）上的全部模型都声明图像输入——含别名模型与未来新模型。⚠ 按名称判定不确信：非小米后端的同名模型也会被声明。主开关关闭时本项无效。",
             "view.frameMonth": "本月",
@@ -559,8 +559,8 @@
       "cfg.readonly": "Settings are read-only here (the settings service is not mounted).",
       "cfg.cookieHelp": "How to get it: sign in at platform.xiaomimimo.com/console/balance → DevTools → Network → any /api/v1 request → copy the full Cookie request header (must include api-platform_serviceToken and userId).",
       "view.authExpiredTitle": "MiMo sign-in has expired",
-      "view.authExpiredHint": "The official API returned 401. The figures on this page are local estimates, not your actual plan quota. Sign in again and update the cookie to restore them.",
-      "view.authExpiredAction": "Update cookie →",
+      "view.authExpiredHint": "The official API returned 401. The figures on this page are local estimates, not your actual plan quota. Sign in to Xiaomi again, then paste the new cookie under Settings → Plugins → dsh-mimo-extension to restore them.",
+      "view.authExpiredAction": "Update cookie (open plugin settings) →",
       "view.localGeneric": "Local estimate (not signed in, or sign-in expired)",
       "cfg.verify": "Verify",
       "cfg.verifying": "Verifying…",
@@ -584,7 +584,7 @@
       "cfg.cookieWhy": "This cookie reads your plan (Token Plan) quota: both tokenPlan/detail and tokenPlan/usage require it. The pay-as-you-go balance endpoint uses the same credential.",
     
       "view.staleSource": "Provider data (cached, as of {time})",
-            "view.authExpiredStale": "The official API returned 401 — your sign-in has expired. The figures below are cached from the last successful fetch (as of {time}), not live quota. Sign in again and update the cookie to restore live data.",
+            "view.authExpiredStale": "The official API returned 401 — your sign-in has expired. The figures below are cached from the last successful fetch (as of {time}), not live quota. Sign in to Xiaomi again, then paste the new cookie under Settings → Plugins → dsh-mimo-extension to restore live data.",
             "cfg.visionAllMimo": "Declare vision for all models on MiMo channels",
             "cfg.visionAllMimoHint": "Declares image input for every model on a channel identified as MiMo (by address, falling back to name) — including aliased models and future ones. Warning: name-based matching is not certain; a same-named model on a non-Xiaomi backend would also be declared. No effect while the main switch is off.",
             "view.frameMonth": "this month",
@@ -2234,12 +2234,12 @@
                   {
                     type: "button",
                     onClick: () => {
-                      // 滚到页面底部的配置表单并聚焦 Cookie 输入框
-                      const el = document.getElementById("mimo-cookie-input");
-                      if (el && typeof el.scrollIntoView === "function") {
-                        el.scrollIntoView({ behavior: "smooth", block: "center" });
-                      }
-                      if (el && typeof el.focus === "function") el.focus();
+                      // 🔴 必须**跳转到插件页**，不能在详情页里找 Cookie 输入框：
+                      //    配置表单 10-01 已迁到插件页（详情页不再内嵌），
+                      //    旧写法 `getElementById("mimo-cookie-input")` 在详情页
+                      //    永远取到 null → 点击**毫无反应**（用户 10-05 实测反馈）。
+                      //    复用详情页头部「插件设置」的同一个入口（含官方深链）。
+                      openPluginPage();
                     },
                     style: {
                       marginTop: "6px",

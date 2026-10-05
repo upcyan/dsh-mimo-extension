@@ -1055,6 +1055,35 @@ for (const scene of SCENARIOS) {
       "hiddenNotMimo 不再指引「页面底部」（那里已无配置区）");
   }
 
+  // ---------- 详情页不得对"插件页里的元素"做 DOM 查询（10-05 真 bug）----------
+  // 用户反馈「详情页去更新 Cookie 按钮点击没有反应」。根因：配置表单 10-01 迁到
+  // 插件页后，`view.authExpiredAction` 的 onClick 仍在**详情页**里
+  // `getElementById("mimo-cookie-input")` —— 那个 id 只存在于插件页表单
+  // （MimoSettingsForm），详情页永远取到 null → 点击毫无反应。
+  // 正确做法：跳转到插件页（openPluginPage），而不是在详情页找输入框。
+  {
+    // 本作用域源码变量是 src3（见上方 const src3 = readFileSync(…)）
+    const viewStart = src3.indexOf("function MimoUsageView(");
+    const viewEnd = src3.indexOf("function MimoSettingsForm(");
+    const viewSeg = viewStart > 0 && viewEnd > viewStart ? src3.slice(viewStart, viewEnd) : "";
+    // 剥注释后再查（注释里会写旧写法作为反面教材）
+    const codeOnly = viewSeg
+      .split("\n")
+      .map((line) => {
+        const at = line.indexOf("//");
+        return at === -1 ? line : line.slice(0, at);
+      })
+      .join("\n");
+    ok(viewStart > 0 && viewEnd > viewStart, "能切出详情页组件范围（断言覆盖有效）");
+    ok(!/getElementById|querySelector/.test(codeOnly),
+      "★ 详情页内无 DOM 查询（跨视图取插件页元素必然取到 null → 点击无反应）");
+    ok(/onClick: \(\) => \{\s*\n\s*\/\/[\s\S]{0,600}?openPluginPage\(\);\s*\n\s*\},/.test(src3),
+      "★ 登录失效条的按钮走 openPluginPage()（跳插件页，不在详情页找输入框）");
+    // 该 id 只应出现在插件页表单里
+    const idHits = (src3.match(/id: "mimo-cookie-input"/g) || []).length;
+    ok(idHits === 1, `mimo-cookie-input 只在插件页表单定义一次（实为 ${idHits} 处）`);
+  }
+
   // ---------- 方位词必须与布局相符 ----------
   // 宽屏卡片是并排的（`repeat(auto-fit, minmax(290px,1fr))`），套餐卡在模型卡**右侧**；
   // 只有窄屏单列才在下方。所以"下面的套餐额度"在 PC 上指错位置。
