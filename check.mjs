@@ -1392,9 +1392,58 @@ if (loaded) {
     ok(i1 > 0 && i2 > i1, "★ ownEvents 判定在 snapshotEvents 之前（否则重复计父历史）");
   }
 
-  // 如实记录尚未做的部分（避免误以为已修）
-  ok(!/ctx\.on\("session\/event"/.test(hostSource) === true,
-    "（已知未做）尚无 session/event 订阅 —— 重启归零/历史会话丢失，另轮处理");
+  // ★ 10-05 第二轮已补：增量订阅 + storageDomain 落盘（本条随之从
+  //   "已知未做"翻转为"必须已做" —— 旧断言写的是「尚无订阅」，现在会假红）
+  ok(/ctx\.on\("session\/event"/.test(hostSource),
+    "★ 订阅 session/event 增量（官方推荐的生产路径，覆盖历史会话与重启）");
+  ok(/deps\.localCounter\?\.ingestEvent\?\.\(session, event\)/.test(hostSource),
+    "★ 监听器把事件喂给 ingestEvent（增量入口）");
+  ok(/const ingestEvent = \(session, event\) =>/.test(hostSource),
+    "有 ingestEvent 增量入口（O(1)，不读日志）");
+  ok(/typeof session\.isOwnSeq === "function"/.test(hostSource),
+    "增量入口用官方 isOwnSeq 排除 fork 继承前缀");
+  // 只推进 lastSeq，不动 seenLen/anchorSeq（后者是"全量扫描水位"的索引语义）
+  {
+    const i = hostSource.indexOf("const ingestEvent = (session, event) =>");
+    const seg = hostSource.slice(i, i + 2000);
+    ok(/rec\.lastSeq = seq;/.test(seg) && !/rec\.seenLen = /.test(seg) && !/rec\.anchorSeq = /.test(seg),
+      "★ 增量入口只推进 lastSeq（不动 seenLen/anchorSeq，否则兜底扫描会漏事件）");
+  }
+  // 落盘走官方 storageDomain 门面（不直连底层 backend —— 有启动竞态）
+  ok(/ctx\.get\?\.\("storageDomain"\)/.test(hostSource),
+    "★ 落盘走官方 storageDomain 门面（不是底层 storage.backend）");
+  {
+    // ⚠ 必须**先剥注释**：文档注释里写明了"不是底层 storage.backend"（说明设计），
+    //   直接 grep 会把解释性注释判成违规代码（本项目已多次踩这个坑）。
+    const codeOnly = hostSource
+      .split("\n")
+      .map((line) => {
+        const at = line.indexOf("//");
+        const noLine = at === -1 ? line : line.slice(0, at);
+        return noLine;
+      })
+      .join("\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "");   // 去块注释
+    ok(!/storage\.backend/.test(codeOnly),
+      "★ 不直连底层 storage.backend（启动竞态：backend 在 storage 就绪后才注册）");
+  }
+  ok(/void deps\.localCounter\?\.initPersist\?\.\(\)/.test(hostSource),
+    "启动时恢复一次（initPersist）");
+  ok(/deps\.localCounter\?\.closePersist\?\.\(\)/.test(hostSource),
+    "卸载时关句柄（官方契约：调用方拥有句柄生命周期）");
+  // 域名必须满足官方 UNIT_NAME_RE（不允许连字符）
+  {
+    const name = /const STATS_DOMAIN_NAME = "([^"]+)"/.exec(hostSource)?.[1];
+    ok(typeof name === "string" && /^[a-z][a-z0-9_]*$/.test(name),
+      `★ 存储域名合法（不含连字符）：${name}`);
+  }
+  // 恢复屏障必须**从创建时就置真**（否则 initPersist 之前的窗口会丢数据）
+  {
+    const i = hostSource.indexOf("let hydratePending =");
+    const after = hostSource.slice(i, i + 40);
+    ok(/let hydratePending = true;/.test(after),
+      "★ 恢复屏障初值为 true（不能等 initPersist 再置 —— 中间窗口会丢数据）");
+  }
 }
 
 // ---------- 输出 ----------

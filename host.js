@@ -818,18 +818,86 @@ export async function aggregateLocalUsage(dshHome) {
  *   2. `/dsh-mimo-extension/session` 恒返回 null → 胶囊与详情页的
  *      「当前会话用量」恒为 0（summary.sessionTokens 也取不到）。
  *
- * 本实现直接读会话事件流自建统计（`assistant/message.data.usage`）：
- *   - **只读不写**：不落盘、不与 dsh-token-usage-counter 抢同一批文件；
+ * 本实现直接读会话事件流自建统计（官方 `dsh-token-meter` 的 `usageOf` 口径）：
+ *   - **增量优先 + 冷历史兜底**（10-05 加）：
+ *     · 增量：`ctx.on("session/event", …)` → `ingestEvent()` 只吃单个新事件（O(1)），
+ *       这是官方推荐的生产路径（100+ 官方消费方都这么写）；
+ *     · 兜底：`refresh()` 仍扫存活会话 —— 因为 `seenLen/anchorSeq/lastSeq`
+ *       水位去重，重扫是**零增量**、代价可忽略；它覆盖"插件晚于会话启动"
+ *       的冷历史（事件早已提交，监听器收不到旧事件）。
+ *   - **落盘**（10-05 加）：走官方消费门面 `ctx.storageDomain.open(spec)`
+ *     （**不是**底层 `storage.backend` —— 后者有启动竞态，见 dsh-usage-cyanmod
+ *     的 recorded 事故），重启不清零。
+ *   - **只读不抢**：绝不写 `token-usage/` 目录、不与 dsh-token-usage-counter 抢文件；
  *     它一旦装配，`buildSummary` / `sessionUsagePayload` 会优先用它的数据。
  *   - **按事件 `seq` 去重**：重复扫描不会重复计数（事件被 compaction 裁剪也安全）。
- *   - **惰性刷新**：只在 `/session`、`/summary` 被请求时扫描（≤1 次 / 60s），
- *     不订阅 `session/event` —— 那会在每个事件上都遍历一遍事件数组。
  *
- * 口径：统计的是**进程启动以来、当前仍存活的会话**，重启即归零，
- * 因此调用方要把它标注成 `source: "session-events"`，与落盘统计区分。
+ * 口径：统计覆盖**存活会话 + 已落盘的历史**；无 storageDomain 的部署退化为
+ * 「进程内、重启归零」，此时调用方标注 `source: "session-events"`。
  *
  * @param {object} ctx - Cordis 上下文
  */
+
+/**
+ * 按**层级探测**加载 zod（存储域 spec 的 schema 必须是 zod）。
+ *
+ * 为什么不能直接 `import("zod")`：本插件装在
+ * `<profile>/node_modules/dsh-mimo-extension/`，而 zod 在
+ * `<profile>/node_modules/`（或更上层的 `profiles/node_modules`）——
+ * **Node 不跨级解析**，必须逐层试锚点（与 `loadSchemaFactory` 同一套路）。
+ *
+ * @param {object} ctx Cordis 上下文（用 baseUrl 作首选锚点）
+ * @returns {object|null} zod 实例；拿不到返回 null（调用方退化为不持久化）
+ */
+export function loadZod(ctx) {
+  const anchors = [];
+  try {
+    if (typeof ctx?.baseUrl === "string" && ctx.baseUrl.length > 0) {
+      anchors.push(new URL("./__anchor__.js", ctx.baseUrl).href);
+    }
+  } catch {
+    /* Proxy 上读 baseUrl 可能抛 —— 换下一个锚点 */
+  }
+  anchors.push(import.meta.url);
+  if (typeof process.argv?.[1] === "string" && process.argv[1]) anchors.push(process.argv[1]);
+  try {
+    anchors.push(new URL("./__anchor__.js", `file://${process.cwd()}/`).href);
+  } catch {
+    /* 跳过 */
+  }
+  // 层级回退：<pkg> → <profile>/node_modules → <profiles>/node_modules
+  for (const up of ["../../../", "../../../../", "../../../../../../"]) {
+    try {
+      anchors.push(new URL(up + "__anchor__.js", import.meta.url).href);
+    } catch {
+      /* 跳过 */
+    }
+  }
+  for (const anchor of anchors) {
+    try {
+      const loaded = createRequire(anchor)("zod");
+      const z = loaded?.z ?? (typeof loaded?.object === "function" ? loaded : loaded?.default);
+      if (z && typeof z.object === "function" && typeof z.string === "function") return z;
+    } catch {
+      /* 换下一个锚点 */
+    }
+  }
+  return null;
+}
+
+/**
+ * 存储域标识。
+ *
+ * 🔴 **域名必须满足官方 `UNIT_NAME_RE = /^[a-z][a-z0-9_]*$/`（不允许连字符）** ——
+ * 直接用包名（`dsh-mimo-extension`）会被 `dsh-storage-json` 拒绝：
+ * `invalid unit name 'dsh-mimo-extension'`，而该错误被 try/catch 吞成
+ * 「持久化静默失效」（姊妹项目真机踩过：`persistState: save-failed`，
+ * 交付的持久化**从未成功过一次**）。所以这里用下划线形式。
+ */
+const STATS_DOMAIN_NAME = "dsh_mimo_extension_usage";
+/** 快照格式版本（不匹配则丢弃旧数据，避免半截结构被当成新格式读）。 */
+const STATS_DOMAIN_VERSION = 1;
+
 export function createLocalUsageCounter(ctx) {
   const ZERO = () => ({
     inputTokens: 0,
@@ -844,6 +912,50 @@ export function createLocalUsageCounter(ctx) {
   const dayMap = new Map();
   /** provider/model → { model, tokens, calls } */
   const modelMap = new Map();
+
+  // ── 持久化状态（10-05 加）────────────────────────────────────────────
+  /** 官方存储域句柄（`ctx.storageDomain.open(spec)` 的产物）。 */
+  let domain = null;
+  /** 打开失败后**清缓存允许重试**（一次瞬时错误不该让持久化永久失效）。 */
+  let domainOpenFailed = false;
+  /**
+   * 恢复屏障。`storageDomain.open()` 是**异步**的（实测数百毫秒），而
+   * 「扫存活会话」是同步路径 —— 若恢复期间已经扫过会话，`dayMap` 里就有新数据，
+   * 随后 hydrate 用**旧快照覆盖** → 新用量凭空消失，且 `records` 水位已推进、
+   * 再也补不回来（姊妹项目内存复现：恢复前 200 → 恢复后 100）。
+   *
+   * 🔴 **必须从创建时就置真**，不能等 `initPersist()` 里再置：
+   *    调用方是 `void counter.initPersist()`（异步、不等待），从 counter 创建到
+   *    initPersist 真正开跑之间还有一个时间窗口 —— 那期间 `usageStats()` 会正常
+   *    refresh 并写统计，随后的 hydrate 照样用旧快照覆盖 → **屏障形同虚设**。
+   *    （我第一版就是这样：反向验证"移除屏障"竟测不出差异，才发现窗口漏了。）
+   *    `initPersist()` 的 finally 负责解除；调用方从不调用时由
+   *    `barrierDeadline` 兜底解除（见下）。
+   */
+  let hydratePending = true;
+  /**
+   * 兜底解除屏障：万一调用方从不调 `initPersist()`（老版本宿主/异常路径），
+   * 屏障不能永久挡住统计。给一个宽限期后自动放行。
+   */
+  const barrierDeadline = setTimeout(() => {
+    if (hydratePending) hydratePending = false;
+  }, 15_000);
+  if (typeof barrierDeadline?.unref === "function") barrierDeadline.unref();
+  /** 恢复期间被挡下的会话（hydrate 后重扫，靠 seq 水位只吃增量）。 */
+  const pendingSessions = new Set();
+  /** 落盘状态：not-ready / opened-unsaved / pending / saved / save-failed。 */
+  let persistState = "not-ready";
+  let persistSavedAt = 0;
+  let persistFailed = "";
+  let dirty = false;
+  let saveTimer = null;
+  /** 内存态版本号（每次累加 +1）；落盘成功后记录 savedRevision 以判定是否干净。 */
+  let revision = 0;
+  let savedRevision = -1;
+  /** 写失败后的退避重试间隔（5s —— 与姊妹项目一致，便于测试在同一实例上验证）。 */
+  const PERSIST_RETRY_MS = 5_000;
+  /** 成功路径的防抖（避免每个事件都写盘）。 */
+  const PERSIST_DEBOUNCE_MS = 3_000;
 
   const pad = (n) => String(n).padStart(2, "0");
   const dateKeyOf = (time) => {
@@ -991,6 +1103,40 @@ export function createLocalUsageCounter(ctx) {
 
     noteDay(ev.time, total, estimateCredits(provider, model, usage, ev.time));
     noteModel(key, total);
+    // 有新用量 → 标脏（防抖落盘；失败会自动退避重试）
+    markDirty();
+  };
+
+  /**
+   * **增量入口**：`session/event` 监听器直接调用它（官方推荐的生产路径）。
+   *
+   * 与 `ingest(session)` 的分工：`ingest` 是**全量/水位扫描**（冷历史兜底），
+   * 本方法只吃**单个新事件**（O(1)，不读日志）。
+   *
+   * 去重：靠 `handleEvent` 内部的 (turn,step) 槽位语义 + `lastSeq` 水位；
+   * 同时推进 `lastSeq`，保证随后的兜底扫描不会把同一事件算两遍。
+   *
+   * @param {object} session 会话（取 id 与继承信息）
+   * @param {object} event 已提交的 SessionEvent
+   */
+  const ingestEvent = (session, event) => {
+    const sessionId = typeof session?.id === "string" ? session.id : "";
+    if (!sessionId || !event || typeof event !== "object") return;
+    const seq = Number(event.seq);
+    // fork 子会话的**继承前缀**不属于它自有 —— 官方 `isOwnSeq(seq)` 是权威判据。
+    try {
+      if (typeof session.isOwnSeq === "function" && Number.isFinite(seq) && !session.isOwnSeq(seq)) return;
+    } catch {
+      /* 拿不到判据就照常统计（宁可多算也不漏，与全量扫描同语义） */
+    }
+    const rec = getRecord(sessionId);
+    if (Number.isFinite(seq) && seq <= rec.lastSeq) return;
+    handleEvent(rec, event);
+    // ⚠ **只推进 `lastSeq`，不动 `seenLen`/`anchorSeq`**：后两者是"全量扫描水位"
+    //    （按日志**索引**语义），而增量事件不保证与索引一一对应（可能与会话自有的
+    //    其他事件交错）。动它们会让随后的兜底扫描误判"长度没变"，反而漏掉新增事件。
+    //    不动是安全的：兜底重扫靠 `seq <= lastSeq` 逐条跳过，不会重复计数。
+    if (Number.isFinite(seq)) rec.lastSeq = seq;
   };
 
   /**
@@ -1067,12 +1213,266 @@ export function createLocalUsageCounter(ctx) {
 
   /** 刷新全部存活会话（`summary` 用）；返回是否有新数据被吃进来。 */
   const refresh = () => {
+    // 恢复期间不动实时统计（否则会被随后的 hydrate 用旧快照覆盖，
+    // 且水位已推进 → 数据永久丢失）。把会话记下来，hydrate 后重扫。
+    if (hydratePending) {
+      for (const session of liveSessions()) {
+        const id = typeof session?.id === "string" ? session.id : "";
+        if (id) pendingSessions.add(id);
+      }
+      return;
+    }
     for (const session of liveSessions()) ingest(session);
     // 只保留当月的按天数据，避免长驻进程无限增长
     const prefix = currentMonthPrefix();
     for (const key of [...dayMap.keys()]) {
       if (!key.startsWith(prefix)) dayMap.delete(key);
     }
+  };
+
+  // ── 持久化：序列化 / 恢复 / 保存调度（10-05 加）──────────────────────
+  /** 落盘快照（形状与 hydrateState 对应；版本不匹配则丢弃）。 */
+  const serializeState = () => ({
+    v: STATS_DOMAIN_VERSION,
+    savedAt: Date.now(),
+    days: [...dayMap.values()],
+    models: [...modelMap.values()],
+    records: [...records.values()].map((r) => ({
+      sessionId: r.sessionId,
+      counters: r.counters,
+      calls: r.calls,
+      lastSeq: Number.isFinite(r.lastSeq) ? r.lastSeq : null,
+      seenLen: r.seenLen,
+      anchorSeq: Number.isFinite(r.anchorSeq) ? r.anchorSeq : null,
+      lastTurn: r.lastTurn,
+      lastStep: r.lastStep,
+      model: r.model,
+      models: [...r.models.values()],
+    })),
+  });
+
+  /**
+   * 从序列化态恢复（缺失/非法字段一律回默认，**绝不抛错拖垮启动**）。
+   *
+   * @param {object} raw 快照
+   * @returns {boolean} 是否恢复成功
+   */
+  const hydrateState = (raw) => {
+    if (!raw || typeof raw !== "object" || raw.v !== STATS_DOMAIN_VERSION) return false;
+    try {
+      if (Array.isArray(raw.days)) {
+        for (const d of raw.days) {
+          if (d && typeof d.date === "string") dayMap.set(d.date, d);
+        }
+      }
+      if (Array.isArray(raw.models)) {
+        for (const m of raw.models) {
+          if (m && typeof m.model === "string") modelMap.set(m.model, m);
+        }
+      }
+      if (Array.isArray(raw.records)) {
+        for (const r of raw.records) {
+          if (!r || typeof r.sessionId !== "string") continue;
+          records.set(r.sessionId, {
+            sessionId: r.sessionId,
+            counters: r.counters && typeof r.counters === "object" ? r.counters : ZERO(),
+            calls: Number(r.calls) || 0,
+            models: new Map(
+              Array.isArray(r.models)
+                ? r.models.filter((m) => m && typeof m.model === "string").map((m) => [m.model, m])
+                : [],
+            ),
+            lastSeq: Number.isFinite(r.lastSeq) ? r.lastSeq : Number.NEGATIVE_INFINITY,
+            seenLen: Number(r.seenLen) || 0,
+            anchorSeq: Number.isFinite(r.anchorSeq) ? r.anchorSeq : undefined,
+            lastTurn: Number(r.lastTurn) || 0,
+            lastStep: Number(r.lastStep) || 0,
+            model: r.model && typeof r.model === "object" ? r.model : { provider: "", model: "" },
+          });
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * 打开官方存储域（惰性一次）。**失败清缓存允许重试** —— 一次瞬时错误
+   * （如 storageDomain 尚未就绪）不该让持久化永久失效。
+   *
+   * 走 `ctx.storageDomain`（官方消费门面，Cordis 等它就绪），
+   * **不直连** `storage.backend` —— 后者有启动竞态（backend 由
+   * dsh-storage-json 在 storage 就绪**之后**注册，立即 open 会拿到
+   * `registered: none` 并被吞成静默失效）。
+   *
+   * @returns {Promise<object|null>} 域句柄
+   */
+  const openDomain = async () => {
+    if (domain) return domain;
+    if (domainOpenFailed) {
+      // 允许重试：清掉失败标记（下次调度会再试一次）
+      domainOpenFailed = false;
+    }
+    const store = ctx.get?.("storageDomain");
+    if (!store || typeof store.open !== "function") {
+      domainOpenFailed = true;
+      persistState = "not-ready";
+      return null;
+    }
+    const z = loadZod(ctx);
+    if (!z) {
+      // 拿不到 zod → 退化为"不持久化"（打日志，绝不抛错阻断启动）
+      console.warn("[dsh-mimo-extension] 拿不到 zod，本地统计不做持久化（重启归零）");
+      domainOpenFailed = true;
+      persistState = "not-ready";
+      return null;
+    }
+    try {
+      const stateSchema = z
+        .object({
+          v: z.number(),
+          savedAt: z.number().optional(),
+          days: z.array(z.any()).optional(),
+          models: z.array(z.any()).optional(),
+          records: z.array(z.any()).optional(),
+        })
+        .passthrough();
+      const handle = await store.open({
+        name: STATS_DOMAIN_NAME,
+        version: STATS_DOMAIN_VERSION,
+        // 官方契约：`global.schema` **不能接受 null**（null 是"从未写入"的哨兵，
+        // 允许 null 会让"写入过 null"与"从未写入"不可区分）。
+        global: { schema: stateSchema, initial: { v: STATS_DOMAIN_VERSION } },
+      });
+      domain = handle;
+      return domain;
+    } catch (error) {
+      domainOpenFailed = true;
+      persistFailed = String(error?.message ?? error).slice(0, 200);
+      persistState = "not-ready";
+      console.warn("[dsh-mimo-extension] usage persist open failed: %s", persistFailed);
+      return null;
+    }
+  };
+
+  /** 周期检查句柄（`loadAll`/`snapshot` 的读取入口，形状按官方 json 后端）。 */
+  const domainGlobal = () => {
+    try {
+      const g = domain?.global;
+      return g && typeof g.get === "function" ? g : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** 标记"有未落盘的改动"并排一次保存。 */
+  const markDirty = () => {
+    revision += 1;
+    dirty = true;
+    if (persistState === "opened-unsaved" || persistState === "saved") persistState = "pending";
+    scheduleSave(0);
+  };
+
+  /**
+   * 排一次保存。成功路径防抖；**失败路径保留脏标记并退避重试**
+   * （旧实现"写失败清脏标记"会让该批数据永不重试 —— 姊妹项目实测确认）。
+   *
+   * @param {number} [delay] 延迟毫秒；缺省用防抖值
+   */
+  const scheduleSave = (delay) => {
+    if (saveTimer) return;
+    const wait = Number.isFinite(delay) && delay > 0 ? delay : PERSIST_DEBOUNCE_MS;
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      void flushPersist();
+    }, wait);
+    // 定时器不该阻止进程退出
+    if (typeof saveTimer?.unref === "function") saveTimer.unref();
+  };
+
+  /** 真正写盘。失败**不清脏标记**，改为退避重试。 */
+  const flushPersist = async () => {
+    if (!dirty) return;
+    const handle = await openDomain();
+    const g = domainGlobal() ?? (handle ? handle.global : null);
+    if (!g || typeof g.set !== "function") {
+      // 句柄不可用：保留脏标记，退避后再试（不是"永远不试"）
+      persistState = "save-failed";
+      scheduleSave(PERSIST_RETRY_MS);
+      return;
+    }
+    const rev = revision;
+    try {
+      await g.set(serializeState());
+      savedRevision = rev;
+      dirty = revision > rev; // 写入期间又变了 → 仍有脏数据
+      persistSavedAt = Date.now();
+      persistFailed = "";
+      persistState = dirty ? "pending" : "saved";
+      if (dirty) scheduleSave(0);
+    } catch (error) {
+      // 🔴 保留 dirty：否则这批数据永不重试
+      persistState = "save-failed";
+      persistFailed = String(error?.message ?? error).slice(0, 200);
+      scheduleSave(PERSIST_RETRY_MS);
+    }
+  };
+
+  /**
+   * 启动时恢复一次（异步；期间 `refresh()` 被屏障挡住，恢复后重放）。
+   *
+   * @returns {Promise<boolean>} 是否真的恢复到了数据
+   */
+  const initPersist = async () => {
+    hydratePending = true;
+    let restored = false;
+    try {
+      const handle = await openDomain();
+      const g = domainGlobal() ?? (handle ? handle.global : null);
+      if (g && typeof g.get === "function") {
+        const raw = await g.get();
+        restored = hydrateState(raw);
+      }
+      persistState = restored || g ? "opened-unsaved" : "not-ready";
+    } catch (error) {
+      persistFailed = String(error?.message ?? error).slice(0, 200);
+      persistState = "not-ready";
+    } finally {
+      // 无论成功失败都要解除屏障（否则 refresh 永久失效）
+      hydratePending = false;
+      if (barrierDeadline) clearTimeout(barrierDeadline);
+      // 重放：恢复期间被挡下的会话重扫一遍（靠 seq 水位只吃增量，不重复计）
+      if (pendingSessions.size > 0) {
+        const all = liveSessions();
+        for (const session of all) {
+          const id = typeof session?.id === "string" ? session.id : "";
+          if (id && pendingSessions.has(id)) ingest(session);
+        }
+        pendingSessions.clear();
+      }
+      if (restored) markDirty();
+    }
+    return restored;
+  };
+
+  /** 卸载时收尾：关句柄（官方契约：调用方拥有句柄生命周期）+ 清定时器。 */
+  const closePersist = async () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    try {
+      if (dirty) await flushPersist();
+    } catch {
+      /* 收尾失败不抛出 */
+    }
+    try {
+      if (domain && typeof domain.close === "function") await domain.close();
+    } catch (error) {
+      console.warn("[dsh-mimo-extension] usage persist close failed: %s", error?.message ?? error);
+    }
+    domain = null;
   };
 
   /** 确保指定会话已统计（`/session` 用）。 */
@@ -1144,8 +1544,33 @@ export function createLocalUsageCounter(ctx) {
         today: todayKey,
         days,
         models: [...modelMap.values()].sort((a, b) => b.tokens - a.tokens),
+        // 持久化状态（供排查"重启归零"是不是落盘没成功）
+        persisted: persistSavedAt > 0 && savedRevision >= revision,
+        persistState,
+        persistedAt: persistSavedAt || undefined,
+        persistFailed: persistFailed || undefined,
       };
     },
+    /**
+     * 增量喂一个事件（`session/event` 监听器用）。
+     * @param {object} session 会话
+     * @param {object} event 事件
+     */
+    ingestEvent,
+    /** 启动时恢复一次（异步；拿不到 storageDomain 时静默退化为不持久化）。 */
+    initPersist,
+    /** 卸载收尾：清定时器 + 关句柄（官方契约：调用方拥有句柄生命周期）。 */
+    closePersist,
+    /** 只看持久化状态（不触发 refresh）。 */
+    persistStatus: () => ({
+      state: persistState,
+      savedAt: persistSavedAt || null,
+      failed: persistFailed || null,
+      dirty,
+      revision,
+      savedRevision,
+      hasDomain: Boolean(domain),
+    }),
   };
 
   /** 内部：把内部记录整形成外部（dsh-token-usage-counter）同构的载荷。 */
@@ -1989,6 +2414,46 @@ export function apply(ctx, config) {
   // 未装配时（或它没有该会话数据）用本插件从 session 事件里自建的统计。
   // 没有它，`/dsh-mimo-extension/session` 会恒返回 null → 会话用量恒为 0。
   deps.localCounter = createLocalUsageCounter(ctx);
+
+  // ── 事件流订阅（10-05 加）────────────────────────────────────────────
+  // 官方 README：`eventAt()`/`snapshotEvents()`/`ownEvents()` **已弃用**
+  // （"现有逻辑可以暂不迁移，但**禁止新增生产调用**"）；100+ 官方消费方一律
+  // `ctx.on("session/event", (session, event) => …)` 拿**增量**。
+  // 注册即当前 fiber 的 effect，卸载自动摘除。
+  //
+  // ✅ 我们采用「**增量优先 + 冷历史兜底**」：
+  //   · 增量：每个已提交事件 O(1) 喂给 counter，不再每次全量扫日志；
+  //   · 兜底：`refresh()` 仍扫存活会话 —— 靠 `lastSeq/seenLen/anchorSeq` 水位，
+  //     重扫是**零增量**；它覆盖"插件晚于会话启动"的冷历史（那些事件早已提交，
+  //     监听器收不到）。
+  try {
+    if (typeof ctx.on === "function") {
+      ctx.on("session/event", (session, event) => {
+        try {
+          deps.localCounter?.ingestEvent?.(session, event);
+        } catch (err) {
+          // 单条事件统计失败绝不能影响会话本身（我们只是旁观者）
+          ctx.logger?.warn?.("[dsh-mimo-extension] local counter ingest failed: %s", err?.message ?? err);
+        }
+      });
+    }
+  } catch (err) {
+    ctx.logger?.warn?.("[dsh-mimo-extension] session/event subscribe failed: %s", err?.message ?? err);
+  }
+
+  // ── 落盘恢复（异步，走官方 storageDomain 门面）────────────────────────
+  // 拿不到 storageDomain（headless 组合）时静默退化为"进程内、重启归零"。
+  // ⚠ 必须异步：open() 实测数百毫秒；恢复期间 refresh() 被屏障挡住。
+  void deps.localCounter?.initPersist?.();
+
+  // 卸载收尾：清定时器 + 关句柄（官方契约：调用方拥有句柄生命周期）。
+  try {
+    ctx.effect(() => () => {
+      void deps.localCounter?.closePersist?.();
+    });
+  } catch {
+    /* 老平台无 effect 时跳过 */
+  }
 
   // provider 的 API 地址 —— **两级来源**：
   //   ① `llm-pi-ai` 命名空间的 providers.<id>.baseURL（自建 provider 写在这里）
