@@ -1084,6 +1084,22 @@ for (const scene of SCENARIOS) {
     ok(idHits === 1, `mimo-cookie-input 只在插件页表单定义一次（实为 ${idHits} 处）`);
   }
 
+  // ---------- 详情页不显示「MiMo 模式对比统计」（10-06 用户要求删除）----------
+  // 用户原话：「详情页删掉 mimo-mode 的对比统计」。
+  // 该卡按 creditsStats.compare 显示"切换前后日均 Credits"——数据本身是估算
+  // （任务难度/缓存命中率都会影响），用户不需要，已整体移除。
+  // ⚠ host 侧 `creditsStats` 仍照常下发（纯读取、无副作用），只是**没有 UI 消费**。
+  {
+    const viewStart = src3.indexOf("function MimoUsageView(");
+    const viewEnd = src3.indexOf("function MimoSettingsForm(");
+    const viewSeg = viewStart > 0 && viewEnd > viewStart ? src3.slice(viewStart, viewEnd) : "";
+    ok(viewStart > 0 && viewEnd > viewStart, "能切出详情页范围（断言覆盖有效）");
+    ok(!/mimo-mode-compare/.test(viewSeg), "★ 详情页无「MiMo 模式对比」卡片（data-role）");
+    ok(!/modeCompareTitle|modeCompareLine|modeCompareNote|modeCompareNoData/.test(src3),
+      "★ 对比卡的 4 个 i18n 键已全部移除（含 zh/en 两份）");
+    ok(!/creditsCompare/.test(viewSeg), "详情页不再引用 creditsCompare（孤悬状态已清理）");
+  }
+
   // ---------- 方位词必须与布局相符 ----------
   // 宽屏卡片是并排的（`repeat(auto-fit, minmax(290px,1fr))`），套餐卡在模型卡**右侧**；
   // 只有窄屏单列才在下方。所以"下面的套餐额度"在 PC 上指错位置。

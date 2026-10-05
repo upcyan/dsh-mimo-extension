@@ -418,10 +418,6 @@
       "view.legendMiss": "未命中输入",
       "view.legendOut": "输出",
       "view.legendHint": "点击高亮该分段（再点取消）",
-      "view.modeCompareTitle": "MiMo 模式省不省 Credits",
-      "view.modeCompareLine": "开启前 {bd} 天日均 {before} → 开启后 {ad} 天日均 {after} Credits（{dir}{pct}）",
-      "view.modeCompareNote": "按每日 Credits 估算对比；任务难度、缓存命中率都会影响，趋势仅供参考。",
-      "view.modeCompareNoData": "开启/关闭「MiMo 模式」后会在这里对比切换前后的日均 Credits 消耗。",
       "view.todayCredits": "今日 (Credits·估)",
       "view.monthCredits": "本月 (Credits·估)",
     
@@ -600,10 +596,6 @@
       "view.legendMiss": "uncached input",
       "view.legendOut": "output",
       "view.legendHint": "Click to highlight this segment (click again to clear)",
-      "view.modeCompareTitle": "Does MiMo mode save Credits?",
-      "view.modeCompareLine": "Before: {before}/day over {bd}d → After: {after}/day over {ad}d ({dir}{pct})",
-      "view.modeCompareNote": "Compared from daily Credit estimates; task mix and cache-hit rate both affect it — read as a trend, not a bill.",
-      "view.modeCompareNoData": "After you toggle \"MiMo mode\", the before/after daily Credit comparison will appear here.",
       "view.todayCredits": "Today (Credits·est)",
       "view.monthCredits": "This month (Credits·est)",
     
@@ -1703,8 +1695,6 @@
       // 数据是否为缓存快照（Cookie 过期/接口失败时，宿主用上次成功结果兜底）
       const [stale, setStale] = useState(false);
       const [staleAt, setStaleAt] = useState(null);
-      // 每日 Credits 历史 + 模式时间线（宿主落盘文件，含前后日均对比）
-      const [creditsCompare, setCreditsCompare] = useState(null);
       // 图例点选：高亮堆叠柱里的某一段（"变大一圈"），再点同项取消。
       // 纯展示态，不影响任何请求；放在其它 useState 之后、任何提前 return 之前。
       const [legendPick, setLegendPick] = useState(null);
@@ -1748,7 +1738,6 @@
               setAuthExpired(data?.authExpired === true);
               setStale(data?.stale === true);
               setStaleAt(data?.staleAt ?? null);
-              setCreditsCompare(data?.creditsStats ?? null);
             }
           } catch (e) {
             if (epoch === epochRef.current) setError(e instanceof Error ? e.message : String(e));
@@ -2917,44 +2906,6 @@
                                   }),
                             )
                           : null,
-                        // ── MiMo 模式省不省 Credits：切换前后日均对比 ──────
-                        creditsCompare?.compare
-                          ? (() => {
-                              const c = creditsCompare.compare;
-                              const saved = c.deltaPct !== null && c.deltaPct < 0;
-                              const pct = c.deltaPct === null ? "—" : `${Math.abs(Math.round(c.deltaPct))}%`;
-                              return h(
-                                "div",
-                                {
-                                  style: {
-                                    marginTop: "10px",
-                                    paddingTop: "10px",
-                                    borderTop: "1px dashed var(--dsw-alias-border-l1, rgba(0,0,0,.08))",
-                                    fontSize: "11px",
-                                    lineHeight: 1.7,
-                                    color: "var(--dsw-alias-label-secondary, #59636e)",
-                                  },
-                                  "data-role": "mimo-mode-compare",
-                                },
-                                h("div", { style: { fontWeight: 600, marginBottom: "2px" } }, t("view.modeCompareTitle")),
-                                h("div", null, t("view.modeCompareLine", {
-                                  before: fmtFull(c.beforeAvg),
-                                  after: fmtFull(c.afterAvg),
-                                  pct,
-                                  dir: saved ? "↓" : "↑",
-                                  bd: c.beforeDays,
-                                  ad: c.afterDays,
-                                })),
-                                h("div", { style: { opacity: 0.8, marginTop: "2px" } }, t("view.modeCompareNote")),
-                              );
-                            })()
-                          : creditsCompare && creditsCompare.modeTimeline?.length
-                            ? h(
-                                "div",
-                                { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #59636e)", marginTop: "8px" } },
-                                t("view.modeCompareNoData"),
-                              )
-                            : null,
                       )
                     : null,
                 )
