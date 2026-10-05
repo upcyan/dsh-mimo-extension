@@ -521,6 +521,48 @@ for (const scene of SCENARIOS) {
           const uses = (src.match(/renderConfigForm\(\)/g) || []).length;
           ok(uses >= 2, `renderConfigForm 被两个座复用（调用 ${uses} 处，期望 ≥2）`);
         }
+
+        // ── ④ 配置座必须**在 ensureView 之外**（apply 期只注册一次）──
+        // 10-05 实测：原先两个配置座写在 `ensureView(true)` 里 → 每次 tab 显隐
+        // 重估都会**再注册一遍**（离线复现：bundle/row 座各 2 份）。
+        // 配置座与 conversation.view 显隐无关，只该注册一次。
+        {
+          const lines4 = src.split("\n");
+          const evStart = lines4.findIndex((l) => l.includes("const ensureView = (wantShown) =>"));
+          const evEnd = lines4.findIndex((l, i) => i > evStart && l.startsWith("      const ensureSeat"));
+          const body = evStart >= 0 && evEnd > evStart ? lines4.slice(evStart, evEnd).join("\n") : "";
+          ok(
+            evStart >= 0 && evEnd > evStart && !/plugins\.(bundle|row)\.config/.test(body),
+            "★ 配置座不在 ensureView 内（否则每次 tab 重估都重复注册）",
+          );
+          ok(/plugins\.bundle\.config/.test(src.slice(0, lines4.slice(0, evStart).join("\n").length)),
+            "配置座在 ensureView 之前（apply 期注册一次）");
+        }
+
+        // ── ⑤ 模型信息为空时必须保守（不注销 tab）──
+        // 10-05 复现的 bug：探针首帧投影未就绪 → provider/model 都是 "" →
+        // isMiMoEntry("", "") === false → 判成"非 MiMo" → 注销 tab →
+        // 用户开着 hideViewWhenNotMiMo 时切到 MiMo **看不到详情页**。
+        // AGENTS 第 21 条明示：读不到选中模型时**保持挂出**。
+        {
+          const osStart = src.indexOf("const onSelection = ({ provider, model }) =>");
+          // ⚠ 必须先剥注释：该函数的注释里**解释了旧 bug 的写法**（含 `isMiMoEntry("", "")`），
+          //   直接 indexOf 会命中注释，把顺序判反（我本轮已第三次踩这个坑）。
+          const rawSeg = src.slice(osStart, osStart + 2000);
+          const seg = rawSeg
+            .split("\n")
+            .map((line) => {
+              const at = line.indexOf("//");
+              return at === -1 ? line : line.slice(0, at);
+            })
+            .join("\n");
+          ok(/if \(!provider && !model\)/.test(seg),
+            "★ onSelection 空模型信息时提前返回（不注销 tab，符合保守行为）");
+          const guardAt = seg.indexOf("if (!provider && !model)");
+          const entryAt = seg.indexOf("isMiMoEntry(");
+          ok(guardAt !== -1 && entryAt !== -1 && guardAt < entryAt,
+            `★ 保守门在 isMiMoEntry 之前（门@${guardAt} 判定@${entryAt}）`);
+        }
       }
       ok(/exports\.inject = \[[^\]]*"layout"/.test(src),
         "inject 声明含 layout（读 ctx.layout 必须声明，否则 Proxy 抛）");

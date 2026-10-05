@@ -3965,33 +3965,10 @@
       // 由下面那次主动 `rpc("summary")` 填充；偏好保存后也会刷新。
       let latestSummary = null;
 
-      let disposeView = null;
-      let viewRegistered = false;
-      const ensureView = (wantShown) => {
-        if (wantShown === viewRegistered) return;
-        if (!wantShown) {
-          try {
-            disposeView?.();
-          } catch {
-            /* 忽略卸载异常 */
-          }
-          disposeView = null;
-          viewRegistered = false;
-          return;
-        }
-        // 0.2 配置页：自带配置的插件把表单注册进**插件页**（ui-plugin-manager
-        // README「配置页」的官方槽）。
-        //
-        // 🔴 键必须逐字等于平台自己拼的那个：ui-plugin-manager 内部是
-        //    `rowConfigKey(pkg.name, row.rowId) = \`\${bundle}#\${rowId}\``，
-        //    行的「配置」控件由 `configure.has(row) = ledger.rows.has(rowConfigKey(...))`
-        //    决定 —— **键错一个字符就没有按钮**（PC 与移动端同一个 RowsSection，
-        //    不存在"某端能进"的渲染差异）。
-        //    本插件的 pkg.name = dsh-mimo-extension，行 id（cordis.patch.yml 的
-        //    `- id:`）= dsh-mimo-extension（10-01 由短名改为全名）→ 键必须是
-        //    `dsh-mimo-extension#dsh-mimo-extension`。曾误写短名副作用：
-        //    has() 恒 false → 行配置页无入口（详情页跳转只能落到插件页根）。
-        // view === 'summary' 给行卡片的摘要行；'page' 才是带保存按钮的表单。
+      // ── 插件页配置座（apply 期**只注册一次**）────────────────────────────
+      // 🔴 绝不能放进 ensureView(true)：那个函数随 tab 显隐反复调用，每次都会
+      //    **再注册一遍**这两个座（重复注册 + inject 等待控制器泄漏）。
+      //    配置座与 conversation.view 的显隐**无关**。
         // 🔴 为什么必须**两个座都注册**（这是"进插件设置页还得再点一下组件"的根因）：
         //
         // 官方 `PackageDetail`（组合包详情页）渲染配置区的条件是
@@ -4046,6 +4023,34 @@
                 : renderConfigForm(),
           ),
         );
+
+      let disposeView = null;
+      let viewRegistered = false;
+      const ensureView = (wantShown) => {
+        if (wantShown === viewRegistered) return;
+        if (!wantShown) {
+          try {
+            disposeView?.();
+          } catch {
+            /* 忽略卸载异常 */
+          }
+          disposeView = null;
+          viewRegistered = false;
+          return;
+        }
+        // 0.2 配置页：自带配置的插件把表单注册进**插件页**（ui-plugin-manager
+        // README「配置页」的官方槽）。
+        //
+        // 🔴 键必须逐字等于平台自己拼的那个：ui-plugin-manager 内部是
+        //    `rowConfigKey(pkg.name, row.rowId) = \`\${bundle}#\${rowId}\``，
+        //    行的「配置」控件由 `configure.has(row) = ledger.rows.has(rowConfigKey(...))`
+        //    决定 —— **键错一个字符就没有按钮**（PC 与移动端同一个 RowsSection，
+        //    不存在"某端能进"的渲染差异）。
+        //    本插件的 pkg.name = dsh-mimo-extension，行 id（cordis.patch.yml 的
+        //    `- id:`）= dsh-mimo-extension（10-01 由短名改为全名）→ 键必须是
+        //    `dsh-mimo-extension#dsh-mimo-extension`。曾误写短名副作用：
+        //    has() 恒 false → 行配置页无入口（详情页跳转只能落到插件页根）。
+        // view === 'summary' 给行卡片的摘要行；'page' 才是带保存按钮的表单。
         ctx.slots.inject("conversation.view", () => {
           disposeView = ctx.slots.register(
             {
@@ -4123,6 +4128,17 @@
       };
       let lastSelectionIsMiMo = true;
       const onSelection = ({ provider, model }) => {
+        // 🔴 模型信息**为空**时必须保守**保持挂出**（不要注销 tab）。
+        //    10-05 实测复现的 bug：探针首帧投影还没就绪 → provider/model 都是 "" →
+        //    isMiMoEntry("", "") 返回 false → 判成"非 MiMo" → ensureView(false)
+        //    **把 tab 注销掉**；用户开着「非 MiMo 时隐藏」时，切到 MiMo 的瞬间
+        //    正好撞上这一帧 → **tab 不显示**（之后投影就绪才恢复，用户已经看不到）。
+        //    这与 AGENTS 第 21 条明示的保守行为一致：
+        //    「首次回传前、偏好未拉到、或**读不到选中模型**时都保持挂出」。
+        if (!provider && !model) {
+          seenSelection = seenSelection || false; // 不置真：这不算"拿到了选择"
+          return;
+        }
         seenSelection = true;
         // 与胶囊同一套判定：host 的地址级结论优先（summary.isMiMo），
         // provider 一致才采信；否则按名字（provider 名或 model 名）兜底。
