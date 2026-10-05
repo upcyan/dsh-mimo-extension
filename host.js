@@ -1344,6 +1344,13 @@ export function createLocalUsageCounter(ctx) {
         // 官方契约：`global.schema` **不能接受 null**（null 是"从未写入"的哨兵，
         // 允许 null 会让"写入过 null"与"从未写入"不可区分）。
         global: { schema: stateSchema, initial: { v: STATS_DOMAIN_VERSION } },
+        // 🔴 `tables` **必填**（即使不用表）：官方 `defineDomain` 校验第一步就是
+        //    `for (const table of Object.keys(spec.tables))` —— 不传会抛
+        //    `Cannot convert undefined or null to object`，被我们的 catch 吞成
+        //    `persistState: save-failed`（**真机实测就是这个症状**：
+        //    persistFailed="Cannot convert undefined or null to object"）。
+        //    我们只有一条聚合快照（语义是单例）→ 用 global，不开表，但要显式给空对象。
+        tables: {},
       });
       domain = handle;
       return domain;

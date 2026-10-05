@@ -1431,6 +1431,13 @@ if (loaded) {
     "启动时恢复一次（initPersist）");
   ok(/deps\.localCounter\?\.closePersist\?\.\(\)/.test(hostSource),
     "卸载时关句柄（官方契约：调用方拥有句柄生命周期）");
+  // ★ spec 必须显式给 `tables`（官方 defineDomain 校验第一步是
+  //   `Object.keys(spec.tables)` —— 不传会抛 "Cannot convert undefined or null
+  //   to object"，被 catch 吞成 save-failed）。真机实测踩过。
+  ok(/tables: \{\}/.test(hostSource),
+    "★ 存储域 spec 显式声明 tables（官方必填，漏了会静默 save-failed）");
+  ok(/global: \{ schema: stateSchema, initial: \{ v: STATS_DOMAIN_VERSION \} \}/.test(hostSource),
+    "global 槽带 schema + initial（单例快照）");
   // 域名必须满足官方 UNIT_NAME_RE（不允许连字符）
   {
     const name = /const STATS_DOMAIN_NAME = "([^"]+)"/.exec(hostSource)?.[1];
