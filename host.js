@@ -895,6 +895,41 @@ export function createLocalUsageCounter(ctx) {
     modelMap.set(key, hit);
   };
 
+  /**
+   * 取一个事件报告的用量 —— **照抄官方 `dsh-token-meter` 的 `usageOf`**（权威口径）。
+   *
+   * 官方实现（`@deepseek-ai/dsh-token-meter/lib/index.js`）：
+   *   ① `assistant/message` 且 `data.usage !== undefined` → 用 `data.usage`
+   *   ② 否则对 `assistant/message` / **`assistant/attempt`** →
+   *      取 `data.stream` 里**最后一个** `chunk.type === "usage"` 的样本
+   *      （`lastAssistantStreamChunk(stream, "usage")?.usage`）
+   * 其他事件类型一律没有用量。
+   *
+   * 🔴 为什么必须照抄，不能"只读 data.usage"：
+   *    失败 / 重试 / 取消的 `assistant/attempt` **不写 `data.usage`**，
+   *    它的用量只存在于流样本里 —— 官方 README 明确 attempt 是"保留失败/重试/
+   *    取消"且**计费**的。旧实现只做 ① ⇒ 这些调用**系统性漏计**
+   *    （10-05 对照 dsh-usage-cyanmod 实测：用量差 3~4 倍）。
+   *
+   * @param {object} event 会话事件
+   * @returns {object|undefined} usage 对象（无则 undefined）
+   */
+  const usageOfEvent = (event) => {
+    const type = event?.type;
+    const data = event?.data;
+    if (!data || typeof data !== "object") return undefined;
+    if (type === "assistant/message" && data.usage !== undefined) return data.usage;
+    if (type !== "assistant/message" && type !== "assistant/attempt") return undefined;
+    const stream = data.stream;
+    if (!Array.isArray(stream)) return undefined;
+    // 官方 lastAssistantStreamChunk：从尾部找第一个 type==="usage" 的 chunk
+    for (let i = stream.length - 1; i >= 0; i -= 1) {
+      const record = stream[i];
+      if (record?.type === "chunk" && record.chunk?.type === "usage") return record.chunk.usage;
+    }
+    return undefined;
+  };
+
   const getRecord = (sessionId) => {
     let rec = records.get(sessionId);
     if (!rec) {
@@ -934,13 +969,17 @@ export function createLocalUsageCounter(ctx) {
       }
       return;
     }
-    if (ev.type !== "assistant/message") return;
-    const usage = data.usage;
+    // 🔴 用官方 usageOf 口径（message.usage 优先，否则 assistant/attempt 的
+    //    流样本回退）—— 旧实现写死 `ev.type !== "assistant/message"` return，
+    //    漏掉了失败/重试/取消的 attempt（它们的用量只在流样本里）。
+    const usage = usageOfEvent(ev);
     if (!usage || typeof usage !== "object") return;
     const total = addUsage(rec.counters, usage);
     if (total <= 0) return;
 
     rec.calls += 1;
+    // provider/model 来源：attempt 事件没有 data.message.source，
+    // 退回 rec.model（由 request/header 事件记录）。
     const source = data.message?.source ?? {};
     const provider = typeof source.provider === "string" && source.provider ? source.provider : rec.model.provider;
     const model = typeof source.model === "string" && source.model ? source.model : rec.model.model;
@@ -963,14 +1002,34 @@ export function createLocalUsageCounter(ctx) {
   const ingest = (session) => {
     const sessionId = typeof session?.id === "string" ? session.id : "";
     if (!sessionId) return;
+    // 🔴 fork 子会话**只计自有事件**：官方 README 明确 `inheritedEventCount`
+    //    是"复制的前缀"，`ownEvents()` 只返回子会话自有事件。原先一律用
+    //    `snapshotEvents()`（全量）会把继承的父会话历史**重复计一遍**
+    //    （父子各算一次，实测 100 → 200）。
+    //    ownEvents 拿不到才退化为全量（老平台版本）。
+    const ownOf = (s) => {
+      try {
+        if (typeof s.ownEvents === "function") {
+          const own = s.ownEvents();
+          if (Array.isArray(own)) return own;
+        }
+      } catch {
+        /* 退化为全量 */
+      }
+      return null;
+    };
     let events;
     try {
-      events =
-        typeof session.snapshotEvents === "function"
-          ? session.snapshotEvents()
-          : Array.isArray(session.events)
-            ? session.events
-            : null;
+      const own = ownOf(session);
+      if (own) {
+        events = own;
+      } else if (typeof session.snapshotEvents === "function") {
+        events = session.snapshotEvents();
+      } else if (Array.isArray(session.events)) {
+        events = session.events;
+      } else {
+        events = null;
+      }
     } catch {
       return;
     }

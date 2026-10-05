@@ -1359,6 +1359,44 @@ if (loaded) {
     "凭据库不可用时界面有明确降级（不假装保存成功）");
 }
 
+// ---------- 用量口径：对齐官方 dsh-token-meter（10-05）----------
+// 只读分析报告发现与 dsh-usage-cyanmod 的用量差 3~4 倍。核实后确认我们的取数
+// 口径有三个叠加缺口，本轮修前两个：
+//   ① 只认 assistant/message → 漏 assistant/attempt（失败/重试/取消的用量
+//      只写在 data.stream 的 usage 样本里，官方 README 明确 attempt 计费）
+//   ② snapshotEvents() → fork 子会话重复计父历史（应用 ownEvents()）
+// 第三个（无 session/event 订阅 + 无 storageDomain 落盘 → 重启归零、
+// 历史会话丢失）是 4x 缺口的主因，另轮处理。
+{
+  const hostSource = readFileSync(join(here, "host.js"), "utf8");
+  ok(/const usageOfEvent = \(event\) =>/.test(hostSource),
+    "★ 有 usageOfEvent（照抄官方 dsh-token-meter 的 usageOf 口径）");
+  ok(/type === "assistant\/message" && data\.usage !== undefined/.test(hostSource),
+    "口径 ①：assistant/message + data.usage 优先");
+  ok(/type !== "assistant\/message" && type !== "assistant\/attempt"/.test(hostSource),
+    "口径 ②：只对 message/attempt 取用量");
+  ok(/record\?\.type === "chunk" && record\.chunk\?\.type === "usage"/.test(hostSource),
+    "口径 ③：attempt 的用量取自 data.stream 里最后一个 usage chunk");
+  // ★ 旧 bug 防回归：绝不能写死"非 assistant/message 直接 return"
+  ok(!/if \(ev\.type !== "assistant\/message"\) return;/.test(hostSource),
+    "★ 不再写死只认 assistant/message（会系统性漏计 attempt）");
+  ok(/const usage = usageOfEvent\(ev\);/.test(hostSource),
+    "handleEvent 走 usageOfEvent（不是裸读 data.usage）");
+
+  // ★ fork：ownEvents 优先于 snapshotEvents
+  ok(/typeof s\.ownEvents === "function"/.test(hostSource),
+    "ingest 检查 ownEvents 可用（fork 子会话只计自有事件）");
+  {
+    const i1 = hostSource.indexOf("const own = ownOf(session);");
+    const i2 = hostSource.indexOf("events = session.snapshotEvents();");
+    ok(i1 > 0 && i2 > i1, "★ ownEvents 判定在 snapshotEvents 之前（否则重复计父历史）");
+  }
+
+  // 如实记录尚未做的部分（避免误以为已修）
+  ok(!/ctx\.on\("session\/event"/.test(hostSource) === true,
+    "（已知未做）尚无 session/event 订阅 —— 重启归零/历史会话丢失，另轮处理");
+}
+
 // ---------- 输出 ----------
 console.log("通过：");
 for (const line of pass) console.log(`  ✓ ${line}`);
