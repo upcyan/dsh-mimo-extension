@@ -1027,6 +1027,34 @@ for (const scene of SCENARIOS) {
     ok(mdKeys.length === 0, `★ 文案不含 markdown 标记（会原样显示）${mdKeys.length ? `：${mdKeys.join("，")}` : ""}`);
   }
 
+  // ---------- 文案必须与**实现**一致（10-05 用户要求"改文案"） ----------
+  // 实现是 ensureView(false) **注销整个页签**（用户反馈"切到 MiMo 时详情页未显示"
+  // 就是这条链上的空值误判）。而旧文案写着"这一页只提示、不显示用量数据"
+  // —— 那描述的是"页签还在、内容变提示"，与实现矛盾，会误导用户以为功能坏了。
+  // 同理 view.hiddenNotMimo 曾指引"页面底部「MiMo 额度配置」"，
+  // 但 10-01 起表单已迁到插件页（见上方"详情页不再内嵌配置表单"断言）→ 指引失效。
+  {
+    // 本作用域里的源码文本变量名是 src3（见上方 const src3 = readFileSync(…)）
+    const enAt = src3.indexOf("const en = {");
+    const zhHint = /"cfg\.hideViewWhenNotMiMoHint":\s*"([^"]*)"/.exec(src3)?.[1] ?? "";
+    const enHint = /"cfg\.hideViewWhenNotMiMoHint":\s*"([^"]*)"/.exec(src3.slice(enAt))?.[1] ?? "";
+    // ⚠ 值里可能含**转义引号**（en 文案引用了设置项名 "Hide the MiMo usage tab…"），
+    //   用 [^"]* 会在第一个 \" 处截断 → 抓到半截串、断言假红。
+    //   用 (?:\\.|[^"\\])* 容忍转义。
+    const zhHidden = /"view\.hiddenNotMimo":\s*"((?:\\.|[^"\\])*)"/.exec(src3)?.[1] ?? "";
+    const enHidden = /"view\.hiddenNotMimo":\s*"((?:\\.|[^"\\])*)"/.exec(src3.slice(enAt))?.[1] ?? "";
+    // ① 偏好说明必须点明"页签整个隐藏"（与注销实现一致）
+    ok(/整个隐藏|整个.*隐藏/.test(zhHint) && /whole tab is hidden|entire tab/i.test(enHint),
+      "★ 偏好说明写明「页签整个隐藏」（与 ensureView 注销实现一致，不再是「只提示」）");
+    // ② 不许再出现"只提示"这类与实现矛盾的措辞
+    ok(!/只提示/.test(zhHint), "偏好说明不再写「只提示」（那与实现矛盾）");
+    // ③ 指引必须指向**插件页**而非已移除的"页面底部"配置区
+    ok(/插件/.test(zhHidden) && /Plugins/i.test(enHidden),
+      "★ hiddenNotMimo 指引指向插件页（详情页底部配置区已于 10-01 移除）");
+    ok(!/页面底部/.test(zhHidden) && !/at the bottom of the page/i.test(enHidden),
+      "hiddenNotMimo 不再指引「页面底部」（那里已无配置区）");
+  }
+
   // ---------- 方位词必须与布局相符 ----------
   // 宽屏卡片是并排的（`repeat(auto-fit, minmax(290px,1fr))`），套餐卡在模型卡**右侧**；
   // 只有窄屏单列才在下方。所以"下面的套餐额度"在 PC 上指错位置。
